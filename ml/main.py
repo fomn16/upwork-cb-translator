@@ -13,8 +13,7 @@ import numpy as np
 from scipy import signal
 
 # Import your translators
-from seamlessm4t_translator_utils import translate_audio
-from streaming_translator_utils import SAMPLE_RATE, StatelessBytesTranslator
+from models.seamless.streaming_translator_utils import SAMPLE_RATE, StatelessBytesTranslator
 
 translator1 = StatelessBytesTranslator(tgt_lang="hin")  # Hindi output
 
