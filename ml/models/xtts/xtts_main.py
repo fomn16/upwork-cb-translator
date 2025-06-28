@@ -1,12 +1,11 @@
 import torch
-from TTS.api import TTS
 import torchaudio
 import numpy as np
 import time
+from TTS.tts.configs.xtts_config import XttsConfig
+from TTS.tts.models.xtts import Xtts
 
-# Get device
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
+from TTS.api import TTS
 benchmark_strings = [
     "हर सुबह एक नया आशीर्वाद और एक नया अवसर लेकर आती है।",
     "ऐसा कोई नहीं है जो खुद दर्द को प्यार करता हो!",
@@ -59,22 +58,42 @@ benchmark_strings = [
     "हर दिन एक नई उम्मीद लेकर आता है।"
 ]
 
-# Init TTS
-tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+print("Downloading model...")
+_, _, _, _, model_dir = TTS().download_model_by_name(
+    "tts_models/multilingual/multi-dataset/xtts_v2",
+)
+assert model_dir is not None
+print(f"model downloaded to {model_dir}")
+
+print("Loading model...")
+config = XttsConfig()
+config.load_json(model_dir + "/config.json")
+model = Xtts.init_from_config(config)
+model.load_checkpoint(config, checkpoint_dir=model_dir)
+if torch.cuda.is_available():
+    model.cuda()
+print("Computing speaker latents...")
+gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(audio_path=["voice-profile.wav"])
+
+print('Starting benchmark...')
 total_time_start = time.perf_counter()
 test_times = []
 for str in benchmark_strings:
     test_time_start = time.perf_counter()
-    wav = tts.tts(text=str, speaker_wav="voice-profile.wav", language="hi", speed = 1.0)
+    wav = model.inference(
+        benchmark_strings[0],
+        "hi",
+        gpt_cond_latent,
+        speaker_embedding
+    )
     test_times.append(time.perf_counter() - test_time_start)
+    print("generated for: " + str)
 print(f'total:{time.perf_counter() - total_time_start}')
 print(f"avrg: {np.average(test_times)}")
     
 # saving last as example
-clone_audio = np.array(wav, dtype=np.float32)
-audio_tensor = torch.tensor(clone_audio).unsqueeze(0)  # (1, n) for mono
-torchaudio.save(f"testOutputs/wav{time.time()}.wav", audio_tensor, sample_rate=24000)
+torchaudio.save(f"testOutputs/wav{time.time()}.wav", torch.tensor(wav["wav"]).unsqueeze(0), sample_rate=24000)
 
 #result in my device:
-# total:117.60448837500007
-# avrg: 2.400090032183647
+# total:102.87182618300176
+# avrg: 2.0994055654692994
