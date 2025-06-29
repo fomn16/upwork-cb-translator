@@ -62,7 +62,7 @@ test_times = []
 for str in benchmark_strings:
     test_time_start = time.perf_counter()
     request = TTSRequest(
-        text=benchmark_strings[0],
+        text=str,
         speaker_files=["voice-profile.wav"]
     )
     res = tts.generate_speech(request)
@@ -76,5 +76,5 @@ print(f"avrg: {np.average(test_times)}")
 res.save(f"./testOutputs/wav{time.time()}.wav")
 
 #result in my device:
-# total:90.61795330099994
-# avrg: 1.8493305864899505
+# total:90.33618214700027
+# avrg: 1.843581633959182
