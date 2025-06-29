@@ -1,6 +1,7 @@
 import numpy as np
 import time
 from auralis import TTS, TTSRequest
+import cusom_implementation
 
 benchmark_strings = [
     "हर सुबह एक नया आशीर्वाद और एक नया अवसर लेकर आती है।",
