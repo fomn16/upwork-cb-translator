@@ -1,7 +1,8 @@
+import logging
 import numpy as np
 import time
-from auralis import TTS, TTSRequest
-import cusom_implementation
+from auralis import TTS, TTSRequest, TTSOutput
+import cusom_implementation # This import must stay here even if not used directly in this file
 
 benchmark_strings = [
     "हर सुबह एक नया आशीर्वाद और एक नया अवसर लेकर आती है।",
@@ -55,27 +56,42 @@ benchmark_strings = [
     "हर दिन एक नई उम्मीद लेकर आता है।"
 ]
 
-tts = TTS().from_pretrained("AstraMindAI/xttsv2", gpt_model='AstraMindAI/xtts2-gpt')
+tts = TTS(scheduler_max_concurrency=1, vllm_logging_level=logging.WARN).from_pretrained("AstraMindAI/xttsv2", gpt_model='AstraMindAI/xtts2-gpt')
 
 print('Starting benchmark...')
 total_time_start = time.perf_counter()
 test_times = []
+test_times_beginning_audio = []
+
 for str in benchmark_strings:
-    test_time_start = time.perf_counter()
+    totalWav = bytearray()
+    first = True
+    start_time = test_time_start = time.perf_counter()
+    outputs = []
+    
     request = TTSRequest(
         text=str,
-        speaker_files=["voice-profile.wav"]
+        speaker_files=["voice-profile.wav"],
+        stream=True
     )
     res = tts.generate_speech(request)
-    wav = res.to_bytes()
+    for output in res: # type: ignore
+        if first:
+            start_time = time.perf_counter() - start_time
+            first = False
+        totalWav += output.to_bytes()
+        outputs.append(output)
     test_times.append(time.perf_counter() - test_time_start)
+    test_times_beginning_audio.append(start_time)
     print("generated for: " + str)
-print(f'total:{time.perf_counter() - total_time_start}')
-print(f"avrg: {np.average(test_times)}")
+print(f'total test time:{time.perf_counter() - total_time_start}')
+print(f"avrg time for complete audio: {np.average(test_times)}")
+print(f"avrg time for start of audio: {np.average(test_times_beginning_audio)}")
     
 # saving last as example
-res.save(f"./testOutputs/wav{time.time()}.wav")
+TTSOutput.combine_outputs(outputs).save(f"./testOutputs/wav{time.time()}.wav")
 
 #result in my device:
-# total:90.33618214700027
-# avrg: 1.843581633959182
+# total test time:88.70102017599993
+# avrg time for complete audio: 1.8102141303264832
+# avrg time for start of audio: 1.706575424285635
