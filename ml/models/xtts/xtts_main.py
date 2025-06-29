@@ -4,8 +4,8 @@ import numpy as np
 import time
 from TTS.tts.configs.xtts_config import XttsConfig
 from TTS.tts.models.xtts import Xtts
-
 from TTS.api import TTS
+
 benchmark_strings = [
     "हर सुबह एक नया आशीर्वाद और एक नया अवसर लेकर आती है।",
     "ऐसा कोई नहीं है जो खुद दर्द को प्यार करता हो!",
@@ -81,7 +81,7 @@ test_times = []
 for str in benchmark_strings:
     test_time_start = time.perf_counter()
     wav = model.inference(
-        benchmark_strings[0],
+        str,
         "hi",
         gpt_cond_latent,
         speaker_embedding
@@ -95,5 +95,5 @@ print(f"avrg: {np.average(test_times)}")
 torchaudio.save(f"testOutputs/wav{time.time()}.wav", torch.tensor(wav["wav"]).unsqueeze(0), sample_rate=24000)
 
 #result in my device:
-# total:102.87182618300176
-# avrg: 2.0994055654692994
+# total:95.39092401200014
+# avrg: 1.9467332364694014
