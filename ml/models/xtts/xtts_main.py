@@ -1,11 +1,7 @@
-import torch
-import torchaudio
 import numpy as np
 import time
-from TTS.tts.configs.xtts_config import XttsConfig
-from TTS.tts.models.xtts import Xtts
+from auralis import TTS, TTSRequest
 
-from TTS.api import TTS
 benchmark_strings = [
     "हर सुबह एक नया आशीर्वाद और एक नया अवसर लेकर आती है।",
     "ऐसा कोई नहीं है जो खुद दर्द को प्यार करता हो!",
@@ -58,42 +54,27 @@ benchmark_strings = [
     "हर दिन एक नई उम्मीद लेकर आता है।"
 ]
 
-print("Downloading model...")
-_, _, _, _, model_dir = TTS().download_model_by_name(
-    "tts_models/multilingual/multi-dataset/xtts_v2",
-)
-assert model_dir is not None
-print(f"model downloaded to {model_dir}")
-
-print("Loading model...")
-config = XttsConfig()
-config.load_json(model_dir + "/config.json")
-model = Xtts.init_from_config(config)
-model.load_checkpoint(config, checkpoint_dir=model_dir)
-if torch.cuda.is_available():
-    model.cuda()
-print("Computing speaker latents...")
-gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(audio_path=["voice-profile.wav"])
+tts = TTS().from_pretrained("AstraMindAI/xttsv2", gpt_model='AstraMindAI/xtts2-gpt')
 
 print('Starting benchmark...')
 total_time_start = time.perf_counter()
 test_times = []
 for str in benchmark_strings:
     test_time_start = time.perf_counter()
-    wav = model.inference(
-        benchmark_strings[0],
-        "hi",
-        gpt_cond_latent,
-        speaker_embedding
+    request = TTSRequest(
+        text=benchmark_strings[0],
+        speaker_files=["voice-profile.wav"]
     )
+    res = tts.generate_speech(request)
+    wav = res.to_bytes()
     test_times.append(time.perf_counter() - test_time_start)
     print("generated for: " + str)
 print(f'total:{time.perf_counter() - total_time_start}')
 print(f"avrg: {np.average(test_times)}")
     
 # saving last as example
-torchaudio.save(f"testOutputs/wav{time.time()}.wav", torch.tensor(wav["wav"]).unsqueeze(0), sample_rate=24000)
+res.save(f"./testOutputs/wav{time.time()}.wav")
 
 #result in my device:
-# total:102.87182618300176
-# avrg: 2.0994055654692994
+# total:90.61795330099994
+# avrg: 1.8493305864899505
