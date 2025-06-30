@@ -105,6 +105,6 @@ async def test_async(tts:TTS):
 tts = TTS().from_pretrained("AstraMindAI/xttsv2", gpt_model='AstraMindAI/xtts2-gpt')
 asyncio.run(test_async(tts))
 #result in my device:
-# total test time:90.84232623100252
-# avrg time for complete audio: 1.8539118956938851
-# avrg time for start of audio: 1.720142687592113
+# total test time:79.47651708299964
+# avrg time for complete audio: 1.6111852593266103
+# avrg time for start of audio: 1.479386037673456
