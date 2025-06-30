@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import numpy as np
 import time
@@ -55,43 +56,44 @@ benchmark_strings = [
     "जो लोग मेहनत करते हैं, किस्मत भी उन्हीं का साथ देती है।",
     "हर दिन एक नई उम्मीद लेकर आता है।"
 ]
+async def test_async(tts:TTS):
+    print('Starting benchmark...')
+    total_time_start = time.perf_counter()
+    test_times = []
+    test_times_beginning_audio = []
+
+    for str in benchmark_strings:
+        outputs = []
+        test_time_start = time.perf_counter()
+        request = TTSRequest(
+            text=str,
+            speaker_files=["voice-profile.wav"],
+            stream=True
+        )
+        first = True
+        start_time = time.perf_counter()
+        
+        res = await tts.generate_speech_async(request)
+        async for output in res: # type: ignore
+            if first:
+                start_time = time.perf_counter() - start_time
+                first = False
+        output.to_bytes()
+        outputs.append(output)
+        
+        test_times.append(time.perf_counter() - test_time_start)
+        test_times_beginning_audio.append(start_time)
+        print("generated for: " + str)
+    print(f'total test time:{time.perf_counter() - total_time_start}')
+    print(f"avrg time for complete audio: {np.average(test_times)}")
+    print(f"avrg time for start of audio: {np.average(test_times_beginning_audio)}")
+        
+    # saving last as example
+    TTSOutput.combine_outputs(outputs).save(f"./testOutputs/wav{time.time()}.wav")
 
 tts = TTS(scheduler_max_concurrency=1, vllm_logging_level=logging.WARN).from_pretrained("AstraMindAI/xttsv2", gpt_model='AstraMindAI/xtts2-gpt')
-
-print('Starting benchmark...')
-total_time_start = time.perf_counter()
-test_times = []
-test_times_beginning_audio = []
-
-for str in benchmark_strings:
-    totalWav = bytearray()
-    first = True
-    start_time = test_time_start = time.perf_counter()
-    outputs = []
-    
-    request = TTSRequest(
-        text=str,
-        speaker_files=["voice-profile.wav"],
-        stream=True
-    )
-    res = tts.generate_speech(request)
-    for output in res: # type: ignore
-        if first:
-            start_time = time.perf_counter() - start_time
-            first = False
-        totalWav += output.to_bytes()
-        outputs.append(output)
-    test_times.append(time.perf_counter() - test_time_start)
-    test_times_beginning_audio.append(start_time)
-    print("generated for: " + str)
-print(f'total test time:{time.perf_counter() - total_time_start}')
-print(f"avrg time for complete audio: {np.average(test_times)}")
-print(f"avrg time for start of audio: {np.average(test_times_beginning_audio)}")
-    
-# saving last as example
-TTSOutput.combine_outputs(outputs).save(f"./testOutputs/wav{time.time()}.wav")
-
+asyncio.run(test_async(tts))
 #result in my device:
-# total test time:88.70102017599993
-# avrg time for complete audio: 1.8102141303264832
-# avrg time for start of audio: 1.706575424285635
+# total test time:90.84232623100252
+# avrg time for complete audio: 1.8539118956938851
+# avrg time for start of audio: 1.720142687592113
