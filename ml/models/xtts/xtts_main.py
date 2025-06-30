@@ -3,6 +3,7 @@ import logging
 import numpy as np
 import time
 from auralis import TTS, TTSRequest, TTSOutput
+import torch
 import cusom_implementation # This import must stay here even if not used directly in this file
 
 benchmark_strings = [
@@ -102,9 +103,12 @@ async def test_async(tts:TTS):
     # saving last as example
     TTSOutput.combine_outputs(outputs).save(f"./testOutputs/wav{time.time()}.wav")
 
-tts = TTS().from_pretrained("AstraMindAI/xttsv2", gpt_model='AstraMindAI/xtts2-gpt')
+tts = TTS().from_pretrained(
+    "AstraMindAI/xttsv2",
+    gpt_model='AstraMindAI/xtts2-gpt',
+    torch_dtype=torch.float16)
 asyncio.run(test_async(tts))
 #result in my device:
-# total test time:79.47651708299964
-# avrg time for complete audio: 1.6111852593266103
-# avrg time for start of audio: 1.479386037673456
+# total test time:77.17639972200001
+# avrg time for complete audio: 1.5660312727755101
+# avrg time for start of audio: 1.4361012694285706
