@@ -302,11 +302,10 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
 
         # Set model properties
         model.config = config
+        model.hifigan_decoder.optimize_for_inference(use_fp16=True)
 
         # Cast model to specified dtype
-        model = model.to(torch_dtype)
-        model = model.to('cuda')
-
+        model = model.to(torch_dtype).to('cuda')
         return model
 
     async def _get_speaker_embedding(self, audio, sr):
@@ -798,12 +797,14 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
                     output.request_id
                 )
 
-
+                mel = hidden_states.to(self.hifigan_decoder.device)
+                g   = speaker_embeddings.to(self.hifigan_decoder.device)
                 async with self.decoder_semaphore:
                     async with self.cuda_memory_manager():
-                        wav = (await asyncio.to_thread(self.hifigan_decoder,
-                                hidden_states,
-                                g=speaker_embeddings
+                        wav = (await asyncio.to_thread(
+                                self.hifigan_decoder.inference,
+                                mel,
+                                g=g
                             )).cpu().detach().numpy().squeeze()
                          # noqa
 

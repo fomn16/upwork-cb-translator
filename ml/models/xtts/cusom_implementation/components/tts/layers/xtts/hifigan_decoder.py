@@ -240,7 +240,7 @@ class HifiganGenerator(torch.nn.Module):
         """
         with torch.no_grad():
             with torch.amp.autocast('cuda'):
-                x = self.conv_pre(x).unsqueeze(0)
+                x = self.conv_pre(x)
                 if hasattr(self, "cond_layer"):
                     x.add_(self.cond_layer(g))
                 for i in range(self.num_upsamples):
@@ -768,6 +768,9 @@ class HifiDecoder(torch.nn.Module):
             use_torch_spec=True,
             audio_config=speaker_encoder_audio_config,
         )
+        hop_scale = ar_mel_length_compression / output_hop_length
+        sr_scale = output_sample_rate / input_sample_rate
+        self._total_scale = hop_scale * sr_scale
 
     @property
     def device(self):
@@ -783,24 +786,39 @@ class HifiDecoder(torch.nn.Module):
         Returns:
             torch.Tensor: Generated waveform.
         """
-
-        z = torch.nn.functional.interpolate(
-            latents.transpose(1, 2),
-            scale_factor=self.ar_mel_length_compression / self.output_hop_length,
+        latents = latents.half()
+        if g is not None:
+            g = g.half()
+                
+        z = latents.transpose(1, 2).contiguous()
+        z = F.interpolate(
+            z,
+            scale_factor=self._total_scale,
             mode="linear",
             align_corners=False,
         ).squeeze(1)
-        # upsample to the right sr
-        if self.output_sample_rate != self.input_sample_rate:
-            z = torch.nn.functional.interpolate(
-                z,
-                scale_factor=self.output_sample_rate / self.input_sample_rate,
-                mode="linear",
-                align_corners=False,
-            ).squeeze(0)
-        o = self.waveform_decoder(z, g=g)
-        return o
+        return self.waveform_decoder(z, g=g)
 
+    def optimize_for_inference(self, use_fp16: bool = False):
+        """
+        Prepare the model for fast inference:
+        - switch to eval()
+        - remove weight‐norm from the generator
+        - enable cuDNN benchmark
+        - optionally convert to FP16
+        """
+        self.eval()
+        torch.backends.cudnn.benchmark = True
+        try:
+            self.waveform_decoder.remove_weight_norm()
+        except ValueError:
+            # some layers didn’t have weight‐norm applied, so ignore
+            pass
+
+        if use_fp16:
+            print("using half precision model")
+            self.half()
+            
     @torch.no_grad()
     def inference(self, c, g):
         """Generate waveform in inference mode.
@@ -812,7 +830,9 @@ class HifiDecoder(torch.nn.Module):
         Returns:
             torch.Tensor: Generated waveform.
         """
-        return self.forward(c, g=g)
+        use_amp = (next(self.parameters()).dtype == torch.float16)
+        with torch.cuda.amp.autocast(enabled=True):
+            return self.forward(c, g=g)
 
     def load_checkpoint(self, checkpoint_path, eval=False):  # pylint: disable=unused-argument, redefined-builtin
         """Load model checkpoint.

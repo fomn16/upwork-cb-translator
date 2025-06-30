@@ -5,6 +5,7 @@ import time
 from auralis import TTS, TTSRequest, TTSOutput
 import torch
 import cusom_implementation # This import must stay here even if not used directly in this file
+from auralis.common.definitions.enhancer import AudioPreprocessingConfig
 
 benchmark_strings = [
     "हर सुबह एक नया आशीर्वाद और एक नया अवसर लेकर आती है।",
@@ -67,7 +68,16 @@ async def test_async(tts:TTS):
         text="हर सुबह एक नया आशीर्वाद और एक नया अवसर लेकर आती है।",
         speaker_files=["voice-profile.wav"],
         stream=True,
-        language='hi'
+        language='hi',
+        enhance_speech=False,
+        temperature=0.7,
+        top_p=0.8,
+        audio_config=AudioPreprocessingConfig(
+            normalize=False,
+            trim_silence=False,
+            remove_noise=False,
+            enhance_speech=False
+        )
     )
     conditioning_partial = await tts.prepare_for_streaming_generation(conditioningRequest)
 
@@ -80,7 +90,17 @@ async def test_async(tts:TTS):
             text=str,
             speaker_files=["voice-profile.wav"],
             stream=True,
-            context_partial_function=conditioning_partial
+            context_partial_function=conditioning_partial,
+            language='hi',
+            enhance_speech=False,
+            temperature=0.7,
+            top_p=0.8,
+            audio_config=AudioPreprocessingConfig(
+                normalize=False,
+                trim_silence=False,
+                remove_noise=False,
+                enhance_speech=False
+            )
         )
         first = True
         start_time = time.perf_counter()
@@ -109,6 +129,6 @@ tts = TTS().from_pretrained(
     torch_dtype=torch.float16)
 asyncio.run(test_async(tts))
 #result in my device:
-# total test time:77.17639972200001
-# avrg time for complete audio: 1.5660312727755101
-# avrg time for start of audio: 1.4361012694285706
+# total test time: 85.24953444200003
+# avrg time for complete audio: 1.7286368300000021
+# avrg time for start of audio: 1.6205630161836713
