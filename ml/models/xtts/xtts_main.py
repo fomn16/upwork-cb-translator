@@ -61,14 +61,25 @@ async def test_async(tts:TTS):
     total_time_start = time.perf_counter()
     test_times = []
     test_times_beginning_audio = []
+    
+    conditioningRequest = TTSRequest(
+        text="हर सुबह एक नया आशीर्वाद और एक नया अवसर लेकर आती है।",
+        speaker_files=["voice-profile.wav"],
+        stream=True,
+        language='hi'
+    )
+    conditioning_partial = await tts.prepare_for_streaming_generation(conditioningRequest)
 
+    print('finished conditioning')
+    
     for str in benchmark_strings:
         outputs = []
         test_time_start = time.perf_counter()
         request = TTSRequest(
             text=str,
             speaker_files=["voice-profile.wav"],
-            stream=True
+            stream=True,
+            context_partial_function=conditioning_partial
         )
         first = True
         start_time = time.perf_counter()
@@ -91,7 +102,7 @@ async def test_async(tts:TTS):
     # saving last as example
     TTSOutput.combine_outputs(outputs).save(f"./testOutputs/wav{time.time()}.wav")
 
-tts = TTS(scheduler_max_concurrency=1, vllm_logging_level=logging.WARN).from_pretrained("AstraMindAI/xttsv2", gpt_model='AstraMindAI/xtts2-gpt')
+tts = TTS().from_pretrained("AstraMindAI/xttsv2", gpt_model='AstraMindAI/xtts2-gpt')
 asyncio.run(test_async(tts))
 #result in my device:
 # total test time:90.84232623100252
