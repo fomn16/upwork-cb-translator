@@ -5,7 +5,6 @@ from torch.nn import Conv1d, ConvTranspose1d
 from torch.nn import functional as F
 from torch.nn.utils.parametrizations import weight_norm
 from torch.nn.utils.parametrize import remove_parametrizations
-
 from auralis.common.utilities import load_fsspec
 
 LRELU_SLOPE = 0.1
@@ -182,6 +181,7 @@ class HifiganGenerator(torch.nn.Module):
         super().__init__()
         self.inference_padding = inference_padding
         self.num_kernels = len(resblock_kernel_sizes)
+        self._inv_kernels = 1.0 / float(self.num_kernels)
         self.num_upsamples = len(upsample_factors)
         self.cond_in_each_up_layer = cond_in_each_up_layer
 
@@ -224,6 +224,11 @@ class HifiganGenerator(torch.nn.Module):
             for i in range(len(self.ups)):
                 ch = upsample_initial_channel // (2 ** (i + 1))
                 self.conds.append(nn.Conv1d(cond_channels, ch, 1))
+        try:
+            self = torch.compile(self, mode="reduce-overhead")
+            print('Pre-compiled HifiganGenerator with reduce-overhead')
+        except Exception:
+            pass
 
     def forward(self, x, g=None):
         """
@@ -238,27 +243,35 @@ class HifiganGenerator(torch.nn.Module):
             x: [B, C, T]
             Tensor: [B, 1, T]
         """
-        with torch.no_grad():
-            with torch.amp.autocast('cuda'):
-                x = self.conv_pre(x)
-                if hasattr(self, "cond_layer"):
-                    x.add_(self.cond_layer(g))
-                for i in range(self.num_upsamples):
-                    x = F.leaky_relu(x, LRELU_SLOPE, inplace=True)
-                    x = self.ups[i](x)
+        # conv_pre + optional global‐cond
+        x = self.conv_pre(x)
+        if hasattr(self, "cond_layer"):
+            x = x + self.cond_layer(g)
 
-                    if self.cond_in_each_up_layer:
-                        x.add_(self.conds[i](g))
+        # if we need to condition at each upsample, do it once here
+        conds_out = None
+        if self.cond_in_each_up_layer:
+            # precompute all conds[i](g)
+            conds_out = [c(g) for c in self.conds]
 
-                    z_sum = 0
-                    for j in range(self.num_kernels):
-                        z_sum += (self.resblocks[i * self.num_kernels + j](x)).float()
-                    x = z_sum / self.num_kernels
-                x = F.leaky_relu(x, inplace=True)
-                x = self.conv_post(x)
-                x = torch.tanh(x)
-                return x
+        # upsample + MRF fusion
+        for i, up in enumerate(self.ups):
+            x = F.leaky_relu(x, LRELU_SLOPE, inplace=True)
+            x = up(x)
+            if conds_out is not None:
+                x = x + conds_out[i]
 
+            # accumulate all res-block outputs in fp16
+            group = self.resblocks[i * self.num_kernels : (i + 1) * self.num_kernels]
+            z_sum = x.new_zeros(x.shape)  # [B, C, T]
+            for rb in group:
+                z_sum += rb(x)             # stays in fp16
+            x = z_sum * self._inv_kernels
+
+        x = F.leaky_relu(x, LRELU_SLOPE, inplace=True)
+        x = self.conv_post(x)
+        return torch.tanh(x)
+    
     @torch.no_grad()
     def inference(self, c):
         """
@@ -464,7 +477,7 @@ class PreEmphasis(nn.Module):
         """
         super().__init__()
         self.coefficient = coefficient
-        self.register_buffer("filter", torch.tensor([-self.coefficient, 1.0], dtype=torch.float32).view(1, 1, -1))
+        self.register_buffer("filter", torch.tensor([-self.coefficient, 1.0], dtype=torch.float16).view(1, 1, -1))
 
     def forward(self, x):
         """Apply pre-emphasis filtering.
@@ -830,8 +843,7 @@ class HifiDecoder(torch.nn.Module):
         Returns:
             torch.Tensor: Generated waveform.
         """
-        use_amp = (next(self.parameters()).dtype == torch.float16)
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.amp.autocast("cuda", dtype= torch.float16, enabled=True):
             return self.forward(c, g=g)
 
     def load_checkpoint(self, checkpoint_path, eval=False):  # pylint: disable=unused-argument, redefined-builtin

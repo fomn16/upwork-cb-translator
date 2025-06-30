@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import numpy as np
 import time
 from auralis import TTS, TTSRequest, TTSOutput
@@ -58,7 +57,7 @@ benchmark_strings = [
     "जो लोग मेहनत करते हैं, किस्मत भी उन्हीं का साथ देती है।",
     "हर दिन एक नई उम्मीद लेकर आता है।"
 ]
-async def test_async(tts:TTS):
+async def test_async(tts:TTS, n_tests:int=-1):
     print('Starting benchmark...')
     total_time_start = time.perf_counter()
     test_times = []
@@ -83,11 +82,12 @@ async def test_async(tts:TTS):
 
     print('finished conditioning')
     
-    for str in benchmark_strings:
+    for text in benchmark_strings[:n_tests]:
         outputs = []
         test_time_start = time.perf_counter()
+        
         request = TTSRequest(
-            text=str,
+            text=text,
             speaker_files=["voice-profile.wav"],
             stream=True,
             context_partial_function=conditioning_partial,
@@ -110,12 +110,13 @@ async def test_async(tts:TTS):
             if first:
                 start_time = time.perf_counter() - start_time
                 first = False
+        
         output.to_bytes()
         outputs.append(output)
         
         test_times.append(time.perf_counter() - test_time_start)
         test_times_beginning_audio.append(start_time)
-        print("generated for: " + str)
+        print("generated for: " + text)
     print(f'total test time:{time.perf_counter() - total_time_start}')
     print(f"avrg time for complete audio: {np.average(test_times)}")
     print(f"avrg time for start of audio: {np.average(test_times_beginning_audio)}")
@@ -125,7 +126,7 @@ async def test_async(tts:TTS):
 
 tts = TTS().from_pretrained(
     "AstraMindAI/xttsv2",
-    gpt_model='AstraMindAI/xtts2-gpt',
+    gpt_model="AstraMindAI/xtts2-gpt",
     torch_dtype=torch.float16)
 asyncio.run(test_async(tts))
 #result in my device:
