@@ -25,10 +25,7 @@ class GroupNorm32(nn.GroupNorm):
         Returns:
             torch.Tensor: Normalized tensor converted back to input dtype.
         """
-        a = time.perf_counter()
-        ret =  super().forward(x)
-        print('latent_encoder.GroupNorm32.foward', time.perf_counter()-a)
-        return ret
+        return super().forward(x)
 
 
 def conv_nd(dims, *args, **kwargs):
@@ -119,7 +116,6 @@ class QKVAttention(nn.Module):
         Returns:
             torch.Tensor: Output tensor of shape [N x (H * C) x T] after attention.
         """
-        a = time.perf_counter()
         bs, width, length = qkv.shape
         assert width % (3 * self.n_heads) == 0
         ch = width // (3 * self.n_heads)
@@ -132,10 +128,7 @@ class QKVAttention(nn.Module):
             weight[mask.logical_not()] = -torch.inf
         weight = torch.softmax(weight.float(), dim=-1).type(weight.dtype)
         a = torch.einsum("bts,bcs->bct", weight, v)
-
-        ret =  a.reshape(bs, -1, length)
-        print('latent_encoder.QKVAttention.foward', time.perf_counter()-a)
-        return ret
+        return a.reshape(bs, -1, length)
 
 
 class AttentionBlock(nn.Module):
@@ -211,9 +204,7 @@ class AttentionBlock(nn.Module):
         h = self.attention(qkv, mask=mask, qk_bias=qk_bias)
         h = self.proj_out(h)
         xp = self.x_proj(x)
-        ret =  (xp + h).reshape(b, xp.shape[1], *spatial)
-        print('latent_encoder.AttentionBlock.foward', time.perf_counter()-a)
-        return ret
+        return (xp + h).reshape(b, xp.shape[1], *spatial)
 
 
 class ConditioningEncoder(nn.Module):
@@ -258,8 +249,5 @@ class ConditioningEncoder(nn.Module):
         Returns:
             torch.Tensor: Encoded representation of shape [batch_size, embedding_dim, sequence_length].
         """
-        a = time.perf_counter()
         h = self.init(x)
-        h = self.attn(h)
-        print('latent_encoder.ConditioningEncoder.foward', time.perf_counter()-a)
-        return h
+        return self.attn(h)

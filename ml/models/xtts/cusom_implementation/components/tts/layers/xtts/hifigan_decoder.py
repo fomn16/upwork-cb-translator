@@ -224,25 +224,6 @@ class HifiganGenerator(torch.nn.Module):
             for i in range(len(self.ups)):
                 ch = upsample_initial_channel // (2 ** (i + 1))
                 self.conds.append(nn.Conv1d(cond_channels, ch, 1))
-                
-        if torch.cuda.is_available():
-            try:
-                self.forward = torch.compile(
-                    self.forward,
-                    mode="max-autotune",
-                    backend="inductor",
-                    fullgraph=True,
-                    dynamic=False,
-                    options={
-                        "disable_cudagraphs": True,
-                        "epilogue_fusion": True,
-                        "max_autotune": True,
-                        "shape_padding": True
-                    }
-                )
-                print('Compiled HifiganGenerator.forward with max-autotune')
-            except Exception as e:
-                print(f'HifiganGenerator compilation failed: {e}')
 
     def forward(self, x, g=None):
         """
@@ -279,7 +260,7 @@ class HifiganGenerator(torch.nn.Module):
             group = self.resblocks[i * self.num_kernels : (i + 1) * self.num_kernels]
             
             # Process blocks in parallel if possible, or optimize accumulation
-            z_sum = torch.zeros_like(x)
+            z_sum = torch.zeros_like(x, dtype=torch.float16)
             for rb in group:
                 z_sum.add_(rb(x))  # inplace addition
             x = z_sum.mul(self._inv_kernels)
@@ -306,7 +287,6 @@ class HifiganGenerator(torch.nn.Module):
         return self.forward(c)
 
     def remove_weight_norm(self):
-        print("Removing weight norm...")
         for l in self.ups:
             remove_parametrizations(l, "weight")
         for l in self.resblocks:
@@ -800,25 +780,6 @@ class HifiDecoder(torch.nn.Module):
         hop_scale = ar_mel_length_compression / output_hop_length
         sr_scale = output_sample_rate / input_sample_rate
         self._total_scale = hop_scale * sr_scale
-        
-        if torch.cuda.is_available():
-            try:
-                self.forward = torch.compile(
-                    self.forward,
-                    mode="max-autotune",
-                    backend="inductor",
-                    fullgraph=True,
-                    dynamic=False,
-                    options={
-                        "disable_cudagraphs": True,
-                        "epilogue_fusion": True,
-                        "max_autotune": True,
-                        "shape_padding": True
-                    }
-                )
-                print('Compiled HifiDecoder.forward')
-            except Exception as e:
-                print(f'HifiDecoder compilation failed: {e}')
 
     @property
     def device(self):
@@ -834,9 +795,9 @@ class HifiDecoder(torch.nn.Module):
         Returns:
             torch.Tensor: Generated waveform.
         """
-        latents = latents.half().to(self.device, dtype=next(self.parameters()).dtype, non_blocking=True)
+        latents = latents.half().to(self.device, dtype=torch.float16, non_blocking=True)
         if g is not None:
-            g = g.half().to(self.device, dtype=next(self.parameters()).dtype, non_blocking=True)
+            g = g.half().to(self.device, dtype=torch.float16, non_blocking=True)
         
         z = latents.transpose(1, 2).contiguous()
         z = F.interpolate(
@@ -846,7 +807,7 @@ class HifiDecoder(torch.nn.Module):
             align_corners=False,
         )
         z.squeeze_(1)
-        return self.waveform_decoder(z, g=g)
+        return self.waveform_decoder.forward(z, g=g)
 
     def optimize_for_inference(self, use_fp16: bool = False):
         """
@@ -858,8 +819,8 @@ class HifiDecoder(torch.nn.Module):
         """
         self.eval()
         torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.allow_tf32 = True
-        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_tf32 = False
         
         # Set memory pool settings
         torch.cuda.empty_cache()

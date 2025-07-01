@@ -781,7 +781,6 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
 
                 mel = hidden_states.to(self.hifigan_decoder.device)
                 g   = speaker_embeddings.to(self.hifigan_decoder.device)
-                print('pre_hifigan_decoder_inference')
                 a = time.perf_counter()
                 async with self.decoder_semaphore:
                     async with self.cuda_memory_manager():
@@ -797,7 +796,7 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
                                         start_time = request.start_time,
                                         token_length = len(output.outputs[0].token_ids)
                                         )
-                print('post_hifigan_decoder_inference', time.perf_counter() - a)
+                print('XTTSv2Engine.process_tokens_to_speechhifigan_decoder.inference', time.perf_counter() - a)
 
 
 

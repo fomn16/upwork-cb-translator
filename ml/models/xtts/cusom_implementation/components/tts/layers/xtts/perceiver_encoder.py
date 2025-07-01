@@ -87,14 +87,16 @@ class Attend(nn.Module):
         if not torch.cuda.is_available() or not use_flash:
             return
 
-        device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
-
+        self.cuda_config = self.config(True, False, False)
+        
+        '''device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
+        
         if device_properties.major == 8 and device_properties.minor == 0:
             print_once("A100 GPU detected, using flash attention if input tensor is on cuda")
             self.cuda_config = self.config(True, False, False)
         else:
             print_once("Non-A100 GPU detected, using math or mem efficient attention if input tensor is on cuda")
-            self.cuda_config = self.config(False, True, True)
+            self.cuda_config = self.config(False, True, True)'''
 
     def get_mask(self, n, device):
         """Get or create causal attention mask.
@@ -175,8 +177,6 @@ class Attend(nn.Module):
         n, i, j - sequence length (base sequence length, source, target)
         d - feature dimension
         """
-
-        a=time.perf_counter()
         n, device = q.shape[-2], q.device
 
         scale = q.shape[-1] ** -0.5
@@ -206,13 +206,7 @@ class Attend(nn.Module):
 
         attn = sim.softmax(dim=-1)
         attn = self.attn_dropout(attn)
-
-        # aggregate values
-
-        out = einsum(f"b h i j, {kv_einsum_eq} -> b h i d", attn, v)
-
-        print('perceiver_encoder.Attend.foward', time.perf_counter()-a)
-        return out
+        return einsum(f"b h i j, {kv_einsum_eq} -> b h i d", attn, v)
 
 
 def Sequential(*mods):
@@ -274,7 +268,6 @@ class RMSNorm(nn.Module):
         Returns:
             torch.Tensor: Normalized tensor.
         """
-        a=time.perf_counter()
         gamma = default(self.gamma, 1)
         out = F.normalize(x, dim=-1) * self.scale * gamma
 
@@ -284,10 +277,7 @@ class RMSNorm(nn.Module):
         assert exists(cond)
         gamma, beta = self.to_gamma_beta(cond).chunk(2, dim=-1)
         gamma, beta = map(lambda t: rearrange(t, "b d -> b 1 d"), (gamma, beta))
-        ret =  out * gamma + beta
-    
-        print('perceiver_encoder.RMSNorm.foward', time.perf_counter()-a)
-        return ret
+        return out * gamma + beta
 
 
 class CausalConv1d(nn.Conv1d):
@@ -321,14 +311,9 @@ class CausalConv1d(nn.Conv1d):
         Returns:
             torch.Tensor: Output after causal convolution.
         """
-        a=time.perf_counter()
         causal_padded_x = F.pad(x, (self.causal_padding, 0), value=0.0)
-        ret =  super().forward(causal_padded_x)
+        return super().forward(causal_padded_x)
     
-        print('perceiver_encoder.CausalConv1d.foward', time.perf_counter()-a)
-        return ret
-
-
 class GEGLU(nn.Module):
     """Gated Gaussian Error Linear Unit activation function."""
 
@@ -341,11 +326,8 @@ class GEGLU(nn.Module):
         Returns:
             torch.Tensor: Output after GEGLU activation.
         """
-        a=time.perf_counter()
         x, gate = x.chunk(2, dim=-1)
-        ret =  F.gelu(gate) * x
-        print('perceiver_encoder.GEGLU.foward', time.perf_counter()-a)
-        return ret
+        return F.gelu(gate) * x
 
 
 def FeedForward(dim, mult=4, causal_conv=False):
@@ -360,7 +342,6 @@ def FeedForward(dim, mult=4, causal_conv=False):
     Returns:
         nn.Sequential: Feed-forward network module.
     """
-    a=time.perf_counter()
     dim_inner = int(dim * mult * 2 / 3)
 
     conv = None
@@ -370,10 +351,7 @@ def FeedForward(dim, mult=4, causal_conv=False):
             CausalConv1d(dim_inner, dim_inner, 3),
             Rearrange("b d n -> b n d"),
         )
-
-    ret =  Sequential(nn.Linear(dim, dim_inner * 2), GEGLU(), conv, nn.Linear(dim_inner, dim))
-    print('perceiver_encoder.GEGLU.FeedForward', time.perf_counter()-a)
-    return ret
+    return Sequential(nn.Linear(dim, dim_inner * 2), GEGLU(), conv, nn.Linear(dim_inner, dim))
 
 
 class PerceiverResampler(nn.Module):
@@ -445,19 +423,13 @@ class PerceiverResampler(nn.Module):
         Returns:
             torch.Tensor: Processed tensor of shape [batch, num_latents, dim].
         """
-        a=time.perf_counter()
         batch = x.shape[0]
-
         x = self.proj_context(x)
-
         latents = repeat(self.latents, "n d -> b n d", b=batch)
-
         for attn, ff in self.layers:
             latents = attn(latents, x, mask=mask) + latents
             latents = ff(latents) + latents
-        ret = self.norm(latents)
-        print('perceiver_encoder.PerceiverResampler.foward', time.perf_counter()-a)
-        return ret
+        return self.norm(latents)
 
 
 class Attention(nn.Module):
@@ -487,7 +459,6 @@ class Attention(nn.Module):
         self.to_out = nn.Linear(dim_inner, dim, bias=False)
 
     def forward(self, x, context=None, mask=None):
-        a=time.perf_counter()
         h, has_context = self.heads, exists(context)
 
         context = default(context, x)
@@ -501,6 +472,4 @@ class Attention(nn.Module):
         out = self.attend(q, k, v, mask=mask)
 
         out = rearrange(out, "b h n d -> b n (h d)")
-        ret =  self.to_out(out)
-        print('perceiver_encoder.Attention.foward', time.perf_counter()-a)
-        return ret
+        return self.to_out(out)
