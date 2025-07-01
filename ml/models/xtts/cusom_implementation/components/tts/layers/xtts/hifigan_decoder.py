@@ -84,7 +84,7 @@ class ResBlock1(torch.nn.Module):
         for c1, c2 in zip(self.convs1, self.convs2):
             xt = F.leaky_relu(x, LRELU_SLOPE)
             xt = c1(xt)
-            xt = F.leaky_relu(xt, LRELU_SLOPE)
+            F.leaky_relu(xt, LRELU_SLOPE, inplace=True)
             xt = c2(xt)
             x = xt + x
         return x
@@ -224,11 +224,25 @@ class HifiganGenerator(torch.nn.Module):
             for i in range(len(self.ups)):
                 ch = upsample_initial_channel // (2 ** (i + 1))
                 self.conds.append(nn.Conv1d(cond_channels, ch, 1))
-        try:
-            self = torch.compile(self, mode="reduce-overhead")
-            print('Pre-compiled HifiganGenerator with reduce-overhead')
-        except Exception:
-            pass
+                
+        if torch.cuda.is_available():
+            try:
+                self.forward = torch.compile(
+                    self.forward,
+                    mode="max-autotune",
+                    backend="inductor",
+                    fullgraph=True,
+                    dynamic=False,
+                    options={
+                        "disable_cudagraphs": True,
+                        "epilogue_fusion": True,
+                        "max_autotune": True,
+                        "shape_padding": True
+                    }
+                )
+                print('Compiled HifiganGenerator.forward with max-autotune')
+            except Exception as e:
+                print(f'HifiganGenerator compilation failed: {e}')
 
     def forward(self, x, g=None):
         """
@@ -256,19 +270,21 @@ class HifiganGenerator(torch.nn.Module):
 
         # upsample + MRF fusion
         for i, up in enumerate(self.ups):
-            x = F.leaky_relu(x, LRELU_SLOPE, inplace=True)
+            F.leaky_relu(x, LRELU_SLOPE, inplace=True)
             x = up(x)
             if conds_out is not None:
                 x = x + conds_out[i]
 
             # accumulate all res-block outputs in fp16
             group = self.resblocks[i * self.num_kernels : (i + 1) * self.num_kernels]
-            z_sum = x.new_zeros(x.shape)  # [B, C, T]
+            
+            # Process blocks in parallel if possible, or optimize accumulation
+            z_sum = torch.zeros_like(x)
             for rb in group:
-                z_sum += rb(x)             # stays in fp16
-            x = z_sum * self._inv_kernels
+                z_sum.add_(rb(x))  # inplace addition
+            x = z_sum.mul(self._inv_kernels)
 
-        x = F.leaky_relu(x, LRELU_SLOPE, inplace=True)
+        F.leaky_relu(x, LRELU_SLOPE, inplace=True)
         x = self.conv_post(x)
         return torch.tanh(x)
     
@@ -286,7 +302,7 @@ class HifiganGenerator(torch.nn.Module):
             Tensor: [B, 1, T]
         """
         c = c.to(self.conv_pre.weight.device)
-        c = torch.nn.functional.pad(c, (self.inference_padding, self.inference_padding), "replicate")
+        c = F.pad(c, (self.inference_padding, self.inference_padding), "replicate")
         return self.forward(c)
 
     def remove_weight_norm(self):
@@ -386,7 +402,7 @@ class SELayer(nn.Module):
         """
         y = self.avg_pool(x).view(x.size(0), x.size(1))
         y = self.fc(y).view(x.size(0), x.size(1), 1, 1)
-        return x * y
+        return y.mul(x)
 
 
 class SEBasicBlock(nn.Module):
@@ -477,7 +493,7 @@ class PreEmphasis(nn.Module):
         """
         super().__init__()
         self.coefficient = coefficient
-        self.register_buffer("filter", torch.tensor([-self.coefficient, 1.0], dtype=torch.float16).view(1, 1, -1))
+        self.register_buffer("filter", torch.tensor([-self.coefficient, 1.0], dtype=torch.float32).view(1, 1, -1))
 
     def forward(self, x):
         """Apply pre-emphasis filtering.
@@ -490,8 +506,8 @@ class PreEmphasis(nn.Module):
         """
         assert len(x.size()) == 2
 
-        x = torch.nn.functional.pad(x.unsqueeze(1), (1, 0), "reflect")
-        x = torch.nn.functional.conv1d(x, self.filter).squeeze(1)
+        x = F.pad(x.unsqueeze(1), (1, 0), "reflect")
+        x = F.conv1d(x, self.filter).squeeze(1)
         return x
 
 
@@ -655,7 +671,7 @@ class ResNetSpeakerEncoder(nn.Module):
         x = self.fc(x)
 
         if l2_norm:
-            x = torch.nn.functional.normalize(x, p=2, dim=1)
+            x = F.normalize(x, p=2, dim=1)
         return x
 
     def load_checkpoint(
@@ -784,6 +800,25 @@ class HifiDecoder(torch.nn.Module):
         hop_scale = ar_mel_length_compression / output_hop_length
         sr_scale = output_sample_rate / input_sample_rate
         self._total_scale = hop_scale * sr_scale
+        
+        if torch.cuda.is_available():
+            try:
+                self.forward = torch.compile(
+                    self.forward,
+                    mode="max-autotune",
+                    backend="inductor",
+                    fullgraph=True,
+                    dynamic=False,
+                    options={
+                        "disable_cudagraphs": True,
+                        "epilogue_fusion": True,
+                        "max_autotune": True,
+                        "shape_padding": True
+                    }
+                )
+                print('Compiled HifiDecoder.forward')
+            except Exception as e:
+                print(f'HifiDecoder compilation failed: {e}')
 
     @property
     def device(self):
@@ -799,17 +834,18 @@ class HifiDecoder(torch.nn.Module):
         Returns:
             torch.Tensor: Generated waveform.
         """
-        latents = latents.half()
+        latents = latents.half().to(self.device, dtype=next(self.parameters()).dtype, non_blocking=True)
         if g is not None:
-            g = g.half()
-                
+            g = g.half().to(self.device, dtype=next(self.parameters()).dtype, non_blocking=True)
+        
         z = latents.transpose(1, 2).contiguous()
         z = F.interpolate(
             z,
             scale_factor=self._total_scale,
             mode="linear",
             align_corners=False,
-        ).squeeze(1)
+        )
+        z.squeeze_(1)
         return self.waveform_decoder(z, g=g)
 
     def optimize_for_inference(self, use_fp16: bool = False):
@@ -822,6 +858,11 @@ class HifiDecoder(torch.nn.Module):
         """
         self.eval()
         torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        
+        # Set memory pool settings
+        torch.cuda.empty_cache()
         try:
             self.waveform_decoder.remove_weight_norm()
         except ValueError:
@@ -843,8 +884,11 @@ class HifiDecoder(torch.nn.Module):
         Returns:
             torch.Tensor: Generated waveform.
         """
-        with torch.amp.autocast("cuda", dtype= torch.float16, enabled=True):
-            return self.forward(c, g=g)
+        c = c.to(self.device, dtype=torch.float16, non_blocking=True)
+        g = g.to(self.device, dtype=torch.float16, non_blocking=True)
+        with torch.inference_mode():
+            with torch.amp.autocast("cuda", dtype=torch.float16, enabled=True):
+                return self.forward(c, g=g)
 
     def load_checkpoint(self, checkpoint_path, eval=False):  # pylint: disable=unused-argument, redefined-builtin
         """Load model checkpoint.

@@ -177,24 +177,6 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
             gpt_like_decoder_conditioning=True # noqa
         )
 
-    def half(self):
-        self.logger.warning("Cannot call .half() on XTTSv2Engine. it will be ignored.")
-        # We cannot permit downcasting since it will throw an error while padding
-        return
-
-    def to(self, *args, **kwargs):
-        # Block downcasting
-        dtype = kwargs.get('dtype', None)
-        if dtype == torch.float16 or dtype == torch.bfloat16:
-            self.logger.warning("Cannot cast to half precision. Ignoring the request.")
-            kwargs['dtype'] = torch.float32
-        elif len(args) > 0 and (args[0] == torch.float16 or args[0] == torch.bfloat16):
-            self.logger.warning("Cannot cast to half precision. Ignoring the request.")
-            args = list(args)
-            args[0] = torch.float32
-            args = tuple(args)
-        return super().to(*args, **kwargs)
-
     def init_vllm_engine(self, concurrency):
         """Initialize the VLLM engine with specified concurrency.
 
@@ -799,6 +781,8 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
 
                 mel = hidden_states.to(self.hifigan_decoder.device)
                 g   = speaker_embeddings.to(self.hifigan_decoder.device)
+                print('pre_hifigan_decoder_inference')
+                a = time.perf_counter()
                 async with self.decoder_semaphore:
                     async with self.cuda_memory_manager():
                         wav = (await asyncio.to_thread(
@@ -813,6 +797,7 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
                                         start_time = request.start_time,
                                         token_length = len(output.outputs[0].token_ids)
                                         )
+                print('post_hifigan_decoder_inference', time.perf_counter() - a)
 
 
 

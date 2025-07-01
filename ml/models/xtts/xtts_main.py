@@ -88,7 +88,7 @@ async def test_async(tts:TTS, n_tests:int=-1):
         
         request = TTSRequest(
             text=text,
-            speaker_files=["voice-profile.wav"],
+            speaker_files=[],
             stream=True,
             context_partial_function=conditioning_partial,
             language='hi',
@@ -126,9 +126,8 @@ async def test_async(tts:TTS, n_tests:int=-1):
 
 tts = TTS().from_pretrained(
     "AstraMindAI/xttsv2",
-    gpt_model="AstraMindAI/xtts2-gpt",
-    torch_dtype=torch.float16)
-asyncio.run(test_async(tts))
+    gpt_model="AstraMindAI/xtts2-gpt")
+asyncio.run(test_async(tts,1))
 #result in my device:
 # total test time: 85.24953444200003
 # avrg time for complete audio: 1.7286368300000021
