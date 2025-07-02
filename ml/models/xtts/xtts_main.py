@@ -97,5 +97,5 @@ print(f"avrg: {np.average(test_times)}")
 torchaudio.save(f"testOutputs/wav{time.time()}.wav", torch.tensor(wav["wav"]).unsqueeze(0), sample_rate=24000)
 
 #result in my device:
-# total:95.39092401200014
-# avrg: 1.9467332364694014
+# total:39.3006980359969
+# avrg: 0.8020276750002249
