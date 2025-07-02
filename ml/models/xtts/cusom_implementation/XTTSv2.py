@@ -287,7 +287,7 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
         model.hifigan_decoder.optimize_for_inference(use_fp16=True)
 
         # Cast model to specified dtype
-        model = model.to(torch_dtype).to('cuda')
+        model = model.to(torch_dtype).cuda()
         return model
 
     async def _get_speaker_embedding(self, audio, sr):
@@ -303,9 +303,9 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
         audio_16k = torchaudio.functional.resample(audio, sr, 16000)
         async with self.decoder_semaphore:
             return (
-                self.hifigan_decoder.speaker_encoder.forward(audio_16k.to(self.device), l2_norm=True)
+                self.hifigan_decoder.speaker_encoder.forward(audio_16k.cuda(), l2_norm=True)
                 .unsqueeze(-1)
-                .to(self.device)
+                .cuda()
             )
 
     async def _merge_conditioning(self,
@@ -365,7 +365,7 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
                     f_max=8000,
                     n_mels=80,
                 )
-                style_emb = self.get_style_emb(mel_chunk.to(self.device), None)
+                style_emb = self.get_style_emb(mel_chunk.cuda(), None)
                 style_embs.append(style_emb)
 
             # mean style embedding
@@ -384,7 +384,7 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
                 f_max=8000,
                 n_mels=80,
             )
-            cond_latent = self.get_style_emb(mel.to(self.device))
+            cond_latent = self.get_style_emb(mel.cuda())
         return cond_latent.transpose(1, 2)
 
     async def get_conditioning_latents(
@@ -425,7 +425,7 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
         audios = []
         for file_path in audio_paths:
             audio = load_audio(file_path, load_sr)
-            audio = audio[:, : load_sr * max_ref_length].to(self.device).to(self.dtype)
+            audio = audio[:, : load_sr * max_ref_length].to(self.dtype).cuda()
             if sound_norm_refs:
                 audio = (audio / torch.abs(audio).max()) * 0.75
             if librosa_trim_db is not None:
@@ -500,7 +500,7 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
         async def elaborate_tokens(text_tokens: List[int]) -> torch.Tensor:
             text_tokens.insert(0, self.tokenizer.bos_token_id)
             text_tokens.append(self.tokenizer.eos_token_id)
-            return torch.tensor(text_tokens).unsqueeze(0).to(self.text_embedding.weight.device)
+            return torch.tensor(text_tokens).unsqueeze(0).cuda()
 
         async def embed_tokens(text_tokens: Union[torch.Tensor, List[torch.Tensor]]) -> List[torch.Tensor]:
             embeds = []
@@ -665,7 +665,7 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
             )
         start_of_audio_hs = conditioning["audio"]["embeds"].shape[0] # type: ignore
         # Successfully got hidden states
-        return self.final_norm(hidden_states[start_of_audio_hs:-5, ...].unsqueeze(0).to(self.device).to(self.dtype))
+        return self.final_norm(hidden_states[start_of_audio_hs:-5, ...].unsqueeze(0).to(self.dtype)).cuda()
 
 
     @torch.inference_mode()
@@ -778,16 +778,13 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
                     },
                     output.request_id
                 )
-
-                mel = hidden_states.to(self.hifigan_decoder.device)
-                g   = speaker_embeddings.to(self.hifigan_decoder.device)
                 a = time.perf_counter()
                 async with self.decoder_semaphore:
                     async with self.cuda_memory_manager():
                         wav = (await asyncio.to_thread(
                                 self.hifigan_decoder.inference,
-                                mel,
-                                g=g
+                                hidden_states,
+                                g=speaker_embeddings
                             )).cpu().detach().numpy().squeeze()
                          # noqa
 
@@ -796,9 +793,7 @@ class XTTSv2Engine(BaseAsyncTTSEngine):
                                         start_time = request.start_time,
                                         token_length = len(output.outputs[0].token_ids)
                                         )
-                print('XTTSv2Engine.process_tokens_to_speechhifigan_decoder.inference', time.perf_counter() - a)
-
-
+                print('XTTSv2Engine.process_tokens_to_speech.hifigan_decoder.inference', time.perf_counter() - a)
 
     async def shutdown(self):
         self.llm_engine.shutdown_background_loop()

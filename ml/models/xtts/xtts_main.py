@@ -68,15 +68,6 @@ async def test_async(tts:TTS, n_tests:int=-1):
         speaker_files=["voice-profile.wav"],
         stream=True,
         language='hi',
-        enhance_speech=False,
-        temperature=0.7,
-        top_p=0.8,
-        audio_config=AudioPreprocessingConfig(
-            normalize=False,
-            trim_silence=False,
-            remove_noise=False,
-            enhance_speech=False
-        )
     )
     conditioning_partial = await tts.prepare_for_streaming_generation(conditioningRequest)
 
@@ -91,16 +82,7 @@ async def test_async(tts:TTS, n_tests:int=-1):
             speaker_files=[],
             stream=True,
             context_partial_function=conditioning_partial,
-            language='hi',
-            enhance_speech=False,
-            temperature=0.7,
-            top_p=0.8,
-            audio_config=AudioPreprocessingConfig(
-                normalize=False,
-                trim_silence=False,
-                remove_noise=False,
-                enhance_speech=False
-            )
+            language='hi'
         )
         first = True
         start_time = time.perf_counter()

@@ -282,7 +282,7 @@ class HifiganGenerator(torch.nn.Module):
             x: [B, C, T]
             Tensor: [B, 1, T]
         """
-        c = c.to(self.conv_pre.weight.device)
+        c = c.cuda()
         c = F.pad(c, (self.inference_padding, self.inference_padding), "replicate")
         return self.forward(c)
 
@@ -795,10 +795,6 @@ class HifiDecoder(torch.nn.Module):
         Returns:
             torch.Tensor: Generated waveform.
         """
-        latents = latents.half().to(self.device, dtype=torch.float16, non_blocking=True)
-        if g is not None:
-            g = g.half().to(self.device, dtype=torch.float16, non_blocking=True)
-        
         z = latents.transpose(1, 2).contiguous()
         z = F.interpolate(
             z,
@@ -845,11 +841,11 @@ class HifiDecoder(torch.nn.Module):
         Returns:
             torch.Tensor: Generated waveform.
         """
-        c = c.to(self.device, dtype=torch.float16, non_blocking=True)
-        g = g.to(self.device, dtype=torch.float16, non_blocking=True)
+        c = c.half().to(dtype=torch.float16, non_blocking=True).cuda()
+        g = g.half().to(dtype=torch.float16, non_blocking=True).cuda()
         with torch.inference_mode():
             with torch.amp.autocast("cuda", dtype=torch.float16, enabled=True):
-                return self.forward(c, g=g)
+                return self.forward(c, g=g).cuda()
 
     def load_checkpoint(self, checkpoint_path, eval=False):  # pylint: disable=unused-argument, redefined-builtin
         """Load model checkpoint.
