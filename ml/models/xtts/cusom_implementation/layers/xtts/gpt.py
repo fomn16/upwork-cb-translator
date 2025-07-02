@@ -9,10 +9,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import GPT2Config
+import deepspeed
 
-from TTS.tts.layers.xtts.gpt_inference import GPT2InferenceModel
-from TTS.tts.layers.xtts.latent_encoder import ConditioningEncoder
-from TTS.tts.layers.xtts.perceiver_encoder import PerceiverResampler
+from ...layers.xtts.gpt_inference import GPT2InferenceModel
+from ...layers.xtts.latent_encoder import ConditioningEncoder
+from ...layers.xtts.perceiver_encoder import PerceiverResampler
 
 
 def null_position_embeddings(range, dim):
@@ -82,7 +83,6 @@ def build_hf_gpt_transformer(
         if max_mel_seq_len != -1
         else functools.partial(null_position_embeddings, dim=model_dim)
     )
-    # gpt = torch.compile(gpt, mode="reduce-overhead", fullgraph=True)
     return gpt, mel_pos_emb, text_pos_emb, None, None
 
 
@@ -115,7 +115,7 @@ class GPT(nn.Module):
 
         """
         super().__init__()
-
+        
         self.label_smoothing = label_smoothing
         self.number_text_tokens = number_text_tokens
         self.start_text_token = start_text_token
@@ -168,23 +168,17 @@ class GPT(nn.Module):
         self.final_norm = nn.LayerNorm(model_dim)
         self.text_head = nn.Linear(model_dim, self.number_text_tokens)
         self.mel_head = nn.Linear(model_dim, self.num_audio_tokens)
-
-        if self.use_perceiver_resampler:
-            # XTTS v2
-            self.conditioning_perceiver = PerceiverResampler(
-                dim=model_dim,
-                depth=2,
-                dim_context=model_dim,
-                num_latents=32,
-                dim_head=64,
-                heads=8,
-                ff_mult=4,
-                use_flash_attn=False,
-            )
-        else:
-            # XTTS v1
-            self.prompt_embedding = nn.Embedding(self.num_audio_tokens, model_dim)
-            self.prompt_pos_embedding = LearnedPositionEmbeddings(24 * 9, model_dim)
+        # XTTS v2
+        self.conditioning_perceiver = PerceiverResampler(
+            dim=model_dim,
+            depth=2,
+            dim_context=model_dim,
+            num_latents=32,
+            dim_head=64,
+            heads=8,
+            ff_mult=4,
+            use_flash_attn=True,
+        )
 
     def get_grad_norm_parameter_groups(self):
         return {
@@ -219,17 +213,17 @@ class GPT(nn.Module):
         )
         self.gpt.wte = self.mel_embedding
 
-        if use_deepspeed:
-            import deepspeed
-
-            self.ds_engine = deepspeed.init_inference(
-                model=self.gpt_inference.half(),  # Transformers models
-                mp_size=1,  # Number of GPU
-                dtype=torch.float32,  # desired data type of output
-                replace_method="auto",  # Lets DS autmatically identify the layer to replace
-                replace_with_kernel_inject=True,  # replace the model with the kernel injector
-            )
-            self.gpt_inference = self.ds_engine.module.eval()
+        self.ds_engine = deepspeed.init_inference(
+            model=self.gpt_inference.half(),  # Transformers models
+            dtype=torch.float32,
+            replace_with_kernel_inject=True,  # replace the model with the kernel injector
+            quant={ # quantize gpt model
+                "enabled": True,
+                "activation": {"enabled": True},
+                "weight": {"enabled": True},
+                "qkv": {"enabled": True}}
+        )
+        self.gpt_inference = self.ds_engine.module.eval()
 
     def set_inputs_and_targets(self, input, start_token, stop_token):
         inp = F.pad(input, (1, 0), value=start_token)

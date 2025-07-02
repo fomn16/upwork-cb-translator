@@ -54,3 +54,9 @@ eslintcache
 
 # Python cache
 ml/__pycache__/
+ml/models/xtts/deepspeed_model.pth
+ml/models/xtts/cusom_implementation/layers/xtts/__pycache__/gpt_inference.cpython-310.pyc
+ml/models/xtts/cusom_implementation/layers/xtts/__pycache__/latent_encoder.cpython-310.pyc
+ml/models/xtts/cusom_implementation/layers/xtts/__pycache__/gpt.cpython-310.pyc
+ml/models/xtts/cusom_implementation/layers/xtts/__pycache__/perceiver_encoder.cpython-310.pyc
+ml/models/xtts/cusom_implementation/models/__pycache__/xtts.cpython-310.pyc

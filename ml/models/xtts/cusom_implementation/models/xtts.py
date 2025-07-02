@@ -537,7 +537,7 @@ class Xtts(BaseTTS):
                 text_tokens.shape[-1] < self.args.gpt_max_text_tokens
             ), " ❗ XTTS can only generate text with a maximum of 400 tokens."
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 gpt_codes = self.gpt.generate(
                     cond_latents=gpt_cond_latent,
                     text_inputs=text_tokens,
