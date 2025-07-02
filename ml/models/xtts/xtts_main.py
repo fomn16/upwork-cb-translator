@@ -2,8 +2,8 @@ import torch
 import torchaudio
 import numpy as np
 import time
-from TTS.tts.configs.xtts_config import XttsConfig
-from TTS.tts.models.xtts import Xtts
+from cusom_implementation.configs.xtts_config import XttsConfig
+from cusom_implementation.models.xtts import Xtts
 from TTS.api import TTS
 
 benchmark_strings = [
@@ -69,7 +69,7 @@ print("Loading model...")
 config = XttsConfig()
 config.load_json(model_dir + "/config.json")
 model = Xtts.init_from_config(config)
-model.load_checkpoint(config, checkpoint_dir=model_dir)
+model.load_checkpoint(config, checkpoint_dir=model_dir, use_deepspeed=True)
 if torch.cuda.is_available():
     model.cuda()
 print("Computing speaker latents...")
@@ -78,16 +78,18 @@ gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(audio_path=[
 print('Starting benchmark...')
 total_time_start = time.perf_counter()
 test_times = []
-for str in benchmark_strings:
+for text in benchmark_strings:
     test_time_start = time.perf_counter()
     wav = model.inference(
-        str,
+        text,
         "hi",
         gpt_cond_latent,
         speaker_embedding
     )
-    test_times.append(time.perf_counter() - test_time_start)
-    print("generated for: " + str)
+    test_time_start = time.perf_counter() - test_time_start
+    test_times.append(test_time_start)
+    print("generated for: " + text)
+    print(test_time_start)
 print(f'total:{time.perf_counter() - total_time_start}')
 print(f"avrg: {np.average(test_times)}")
     
