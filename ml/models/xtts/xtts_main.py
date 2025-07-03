@@ -58,6 +58,16 @@ benchmark_strings = [
     "हर दिन एक नई उम्मीद लेकर आता है।"
 ]
 
+# taken from the coqui streaming example code
+def postprocess(wav):
+    if isinstance(wav, list):
+        wav = torch.cat(wav, dim=0)
+    wav = wav.clone().detach().cpu().numpy()
+    wav = wav[None, : int(wav.shape[0])]
+    wav = np.clip(wav, -1, 1)
+    wav = (wav * 32767).astype(np.int16)
+    return wav.tobytes()
+
 print("Downloading model...")
 _, _, _, _, model_dir = TTS().download_model_by_name(
     "tts_models/multilingual/multi-dataset/xtts_v2",
@@ -77,24 +87,35 @@ gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(audio_path=[
 
 print('Starting benchmark...')
 total_time_start = time.perf_counter()
-test_times = []
+full_total = []
+first_byte_total = []
 for text in benchmark_strings:
-    test_time_start = time.perf_counter()
-    wav = model.inference(
+    first = True
+    wav = bytearray()
+    full_time = first_byte_time = time.perf_counter()
+    chunks = model.inference_stream(
         text,
         "hi",
         gpt_cond_latent,
         speaker_embedding
     )
-    test_time_start = time.perf_counter() - test_time_start
-    test_times.append(test_time_start)
-    print("generated for: " + text)
-    print(test_time_start)
+    for chunk in chunks:
+        if(first):
+            first_byte_time=time.perf_counter()-first_byte_time
+            first_byte_total.append(first_byte_time)
+            first = False
+        wav.extend(postprocess(chunk))
+    full_time=time.perf_counter()-full_time
+    full_total.append(full_time)
+    print(f"generated for: ${text} in ${full_time} with first byte in ${first_byte_time}")
 print(f'total:{time.perf_counter() - total_time_start}')
-print(f"avrg: {np.average(test_times)}")
+print(f"avrg: {np.average(full_total)}")
+print(f"avrg first byte: {np.average(first_byte_total)}")
     
 # saving last as example
-torchaudio.save(f"testOutputs/wav{time.time()}.wav", torch.tensor(wav["wav"]).unsqueeze(0), sample_rate=24000)
+audio_np = np.frombuffer(wav, dtype=np.int16)
+audio_tensor = torch.from_numpy(audio_np).unsqueeze(0) # Unsqueeze to add channel dimension (1, N)
+torchaudio.save(f"testOutputs/wav{time.time()}.wav", audio_tensor, sample_rate=24000)
 
 #result in my device:
 # total:39.3006980359969

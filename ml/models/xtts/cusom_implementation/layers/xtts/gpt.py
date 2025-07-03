@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import GPT2Config
 import deepspeed
+from deepspeed.inference.config import QuantizationConfig, WeightQuantConfig, ActivationQuantConfig, QKVQuantConfig, QuantTypeEnum
 
 from ...layers.xtts.gpt_inference import GPT2InferenceModel
 from ...layers.xtts.latent_encoder import ConditioningEncoder
@@ -213,16 +214,32 @@ class GPT(nn.Module):
         )
         self.gpt.wte = self.mel_embedding
 
+        quant_config = QuantizationConfig(
+            enabled=True,
+            activation=ActivationQuantConfig(
+                enabled=True,
+                num_bits=4,
+                q_type=QuantTypeEnum.sym,
+                q_groups=32
+            ),
+            weight=WeightQuantConfig(
+                enabled=True,
+                num_bits=4,
+                q_type=QuantTypeEnum.sym,
+                q_groups=32
+            ),
+            qkv=QKVQuantConfig(
+                enabled=True
+            )
+        )
+        
         self.ds_engine = deepspeed.init_inference(
-            model=self.gpt_inference.half(),  # Transformers models
+            model=self.gpt_inference,  # Transformers models
             dtype=torch.float32,
             replace_with_kernel_inject=True,  # replace the model with the kernel injector
-            quant={ # quantize gpt model
-                "enabled": True,
-                "activation": {"enabled": True},
-                "weight": {"enabled": True},
-                "qkv": {"enabled": True}}
+            quant=quant_config
         )
+        
         self.gpt_inference = self.ds_engine.module.eval()
 
     def set_inputs_and_targets(self, input, start_token, stop_token):
