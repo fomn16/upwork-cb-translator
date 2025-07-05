@@ -5,6 +5,9 @@ import time
 from cusom_implementation.configs.xtts_config import XttsConfig
 from cusom_implementation.models.xtts import Xtts
 from TTS.api import TTS
+from huggingface_hub import snapshot_download
+
+test_short_words = True
 
 benchmark_strings = [
     "हर सुबह एक नया आशीर्वाद और एक नया अवसर लेकर आती है।",
@@ -58,6 +61,20 @@ benchmark_strings = [
     "हर दिन एक नई उम्मीद लेकर आता है।"
 ]
 
+if(test_short_words):
+    benchmark_strings = [
+        "एक",   # one
+        "दो",   # two
+        "तीन",  # three
+        "चार",  # four
+        "पांच", # five
+        "हाँ",  # yes
+        "ना",   # no
+        "घर",   # home
+        "चाय",  # tea
+        "पानी", # water
+    ]
+
 # taken from the coqui streaming example code
 def postprocess(wav):
     if isinstance(wav, list):
@@ -68,10 +85,13 @@ def postprocess(wav):
     wav = (wav * 32767).astype(np.int16)
     return wav.tobytes()
 
+def save_to_wav(wav):
+    audio_np = np.frombuffer(wav, dtype=np.int16)
+    audio_tensor = torch.from_numpy(audio_np).unsqueeze(0) # Unsqueeze to add channel dimension (1, N)
+    torchaudio.save(f"testOutputs/wav{time.time()}.wav", audio_tensor, sample_rate=24000)
+
 print("Downloading model...")
-_, _, _, _, model_dir = TTS().download_model_by_name(
-    "tts_models/multilingual/multi-dataset/xtts_v2",
-)
+model_dir = snapshot_download(repo_id="Abhinay45/XTTS-Hindi-finetuned")
 assert model_dir is not None
 print(f"model downloaded to {model_dir}")
 
@@ -108,14 +128,15 @@ for text in benchmark_strings:
     full_time=time.perf_counter()-full_time
     full_total.append(full_time)
     print(f"generated for: ${text} in ${full_time} with first byte in ${first_byte_time}")
+    if(test_short_words):
+        save_to_wav(wav)
 print(f'total:{time.perf_counter() - total_time_start}')
 print(f"avrg: {np.average(full_total)}")
 print(f"avrg first byte: {np.average(first_byte_total)}")
     
 # saving last as example
-audio_np = np.frombuffer(wav, dtype=np.int16)
-audio_tensor = torch.from_numpy(audio_np).unsqueeze(0) # Unsqueeze to add channel dimension (1, N)
-torchaudio.save(f"testOutputs/wav{time.time()}.wav", audio_tensor, sample_rate=24000)
+if(not test_short_words):
+    save_to_wav(wav)
 
 #result in my device:
 # total:39.3006980359969
