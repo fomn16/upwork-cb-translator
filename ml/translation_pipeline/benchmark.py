@@ -2,14 +2,15 @@ import time
 from typing import Optional, Type, Any
 
 class Benchmark:
-    def __init__(self, name: str):
+    def __init__(self, name: str, buff_size: int = 100):
         """
         :param name: Name of the benchmark (used in printed output)
         """
         self.name = name
-        self.times = []  # Buffer to store the last 100 execution times
+        self.times = []  # Buffer to store the last execution times
         self.min_time = float('inf')  # Global minimum time
         self.max_time = float('-inf')  # Global maximum time
+        self.buff_size = buff_size
 
     def __enter__(self):
         """
@@ -34,8 +35,8 @@ class Benchmark:
         self.min_time = min(self.min_time, elapsed_time)
         self.max_time = max(self.max_time, elapsed_time)
 
-        # Check if we have reached 100 calls
-        if len(self.times) == 100:
+        # Check if we have reached calls
+        if len(self.times) == self.buff_size:
             self.show()
             # Reset the buffer
             self.times = []
@@ -45,7 +46,7 @@ class Benchmark:
     def show(self):
         avg_time = sum(self.times) / len(self.times)
         print(
-            f"[{self.name}] Last 100 blocks stats: "
+            f"[{self.name}] Last {self.buff_size} blocks stats: "
             f"Average time: {avg_time:.6f} seconds | "
             f"Min time: {self.min_time:.6f} seconds | "
             f"Max time: {self.max_time:.6f} seconds"
