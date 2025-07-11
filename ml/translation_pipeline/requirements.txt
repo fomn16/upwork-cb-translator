@@ -1,0 +1,18 @@
+#conda install cuda cudatoolkit cudnn -c nvidia
+#conda install gcc_linux-64=11 gxx_linux-64=11 -c conda-forge
+#pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 # comando acima instalou cuda 12.4
+#export CUDA_HOME=/home/fomn/.conda/envs/env
+#export PATH=$CUDA_HOME/bin:$PATH
+#export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+#export LD_LIBRARY_PATH=$CUDA_HOME/lib:$LD_LIBRARY_PATH
+#export CC=/home/fomn/.conda/envs/env/bin/x86_64-conda-linux-gnu-gcc
+#export CXX=/home/fomn/.conda/envs/env/bin/x86_64-conda-linux-gnu-g++
+
+mkl-service
+librosa
+transformers
+coqui-TTS
+deepspeed
+faster_whisper
+sentencepiece
+sacremoses

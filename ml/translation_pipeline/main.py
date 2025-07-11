@@ -3,13 +3,14 @@ import torch
 from whisper_online import *
 from stream_simulator import StreamSimulator
 from benchmark import Benchmark
+import os
 
 #translation
 from transformers import MarianMTModel, MarianTokenizer
 
 # TTS
-from custom_implementation.configs.xtts_config import XttsConfig
-from custom_implementation.models.xtts import Xtts
+from TTS.tts.configs.xtts_config import XttsConfig
+from TTS.tts.models.xtts import Xtts
 from huggingface_hub import snapshot_download
 import torchaudio
 
@@ -39,9 +40,13 @@ def postprocess(wav):
     return wav.tobytes()
 
 def save_to_wav(wav):
+    path = "testOutputs/"
+    os.makedirs(path, exist_ok=True)
+    path +=f"wav{time.time()}.wav"
+    
     audio_np = np.frombuffer(wav, dtype=np.int16)
     audio_tensor = torch.from_numpy(audio_np).unsqueeze(0) # Unsqueeze to add channel dimension (1, N)
-    torchaudio.save(f"testOutputs/wav{time.time()}.wav", audio_tensor, sample_rate=24000)
+    torchaudio.save(path, audio_tensor, sample_rate=24000)
     
 tts_model_dir = snapshot_download(repo_id="Abhinay45/XTTS-Hindi-finetuned")
 tts_config = XttsConfig()
@@ -75,7 +80,7 @@ def process_transcription(transcription):
     print(translated_text)
     with tts_bench:
         chunks = tts_model.inference_stream(
-            translated_text,
+            translated_text[0],
             "hi",
             gpt_cond_latent,
             speaker_embedding
@@ -88,8 +93,9 @@ while not simulator.finished:
         _,_,transcription = transcription_processor.process_iter()
     if(transcription != ''):
         process_transcription(transcription)
-        
-process_transcription(transcription_processor.finish())
+
+_,_,transcription = transcription_processor.finish()     
+process_transcription(transcription)
 
 # transcription_processor.init() # must do this if the processor will be reused
 

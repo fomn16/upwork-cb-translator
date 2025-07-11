@@ -60,3 +60,5 @@ ml/models/xtts/cusom_implementation/tts/layers/xtts/__pycache__/latent_encoder.c
 ml/models/xtts/cusom_implementation/tts/layers/xtts/__pycache__/gpt.cpython-310.pyc
 ml/models/xtts/cusom_implementation/tts/layers/xtts/__pycache__/perceiver_encoder.cpython-310.pyc
 ml/models/xtts/cusom_implementation/tts/models/__pycache__/xtts.cpython-310.pyc
+
+*.pyc
