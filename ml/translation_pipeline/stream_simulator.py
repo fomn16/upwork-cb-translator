@@ -16,7 +16,7 @@ class StreamSimulator:
     ):
         """
         :param wav_path:     path to input WAV
-        :param received:     callback(bytes, is_final_chunk)
+        :param received:     callback(bytes)
         :param chunk_size:   # samples PER chunk at target_rate
         :param target_rate:  output sample rate (Hz), here 16 kHz
         """

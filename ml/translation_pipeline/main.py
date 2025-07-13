@@ -14,23 +14,15 @@ from TTS.tts.models.xtts import Xtts
 from huggingface_hub import snapshot_download
 import torchaudio
 
+# Pipeline
+from pipeline import *
+import time
+
 input_language = "en"
 output_language = "hi"
 
-# initializing transcriptor
-asr = FasterWhisperASR(input_language, "large-v2")  #options: tiny.en,tiny,base.en,base,small.en,small,medium.en,medium,large-v1,large-v2,large-v3,large,large-v3-turbo
-asr.use_vad()
-transcription_processor = OnlineASRProcessor(asr)
-transcription_processor.init()
-
-# initializing translator
-translator_model_name = f"Helsinki-NLP/opus-mt-{input_language}-{output_language}"
-translator_tokenizer = MarianTokenizer.from_pretrained(translator_model_name)
-translator_model = MarianMTModel.from_pretrained(translator_model_name)
-
-# initializing TTS
-# taken from the coqui streaming example code
-def postprocess(wav):
+# Helper functions
+def postprocess(wav): # taken from the coqui streaming example code
     if isinstance(wav, list):
         wav = torch.cat(wav, dim=0)
     wav = wav.clone().detach().cpu().numpy()
@@ -47,7 +39,19 @@ def save_to_wav(wav):
     audio_np = np.frombuffer(wav, dtype=np.int16)
     audio_tensor = torch.from_numpy(audio_np).unsqueeze(0) # Unsqueeze to add channel dimension (1, N)
     torchaudio.save(path, audio_tensor, sample_rate=24000)
-    
+
+# initializing transcriptor
+asr = FasterWhisperASR(input_language, "large-v2")  #options: tiny.en,tiny,base.en,base,small.en,small,medium.en,medium,large-v1,large-v2,large-v3,large,large-v3-turbo
+asr.use_vad()
+transcription_processor = OnlineASRProcessor(asr)
+transcription_processor.init()
+
+# initializing translator
+translator_model_name = f"Helsinki-NLP/opus-mt-{input_language}-{output_language}"
+translator_tokenizer = MarianTokenizer.from_pretrained(translator_model_name)
+translator_model = MarianMTModel.from_pretrained(translator_model_name)
+
+# initializing TTS
 tts_model_dir = snapshot_download(repo_id="Abhinay45/XTTS-Hindi-finetuned")
 tts_config = XttsConfig()
 tts_config.load_json(tts_model_dir + "/config.json")
@@ -56,48 +60,84 @@ tts_model.load_checkpoint(tts_config, checkpoint_dir=tts_model_dir, use_deepspee
 if torch.cuda.is_available():
     tts_model.cuda()
 gpt_cond_latent, speaker_embedding = tts_model.get_conditioning_latents(audio_path=["felipe.wav"])
-out_wav = bytearray()
 
-# function called every time an audio chunk is received
-def audio_chunk_received(audioBytes: bytes):
-    transcription_processor.insert_audio_chunk(audioBytes)
-
-# declaring object that will handle benchmarks
+# declaring objects that will handle benchmarks
 transcript_bench = Benchmark("transcript")
 translate_bench = Benchmark("translate", buff_size=10)
 tts_bench = Benchmark("tts", buff_size=10)
 
-# simulating received audio stream
-simulator = StreamSimulator('benchmark_audios/156550__acclivity__a-dream-within-a-dream.wav', audio_chunk_received)
-simulator.start_in_thread()
+#### Building the pipeline ####
 
-def process_transcription(transcription):
-    print(transcription)
+### Transcription Pipe ####
+# function called every time an audio chunk is received
+def audio_chunk_received(audioBytes: bytes):
+    transcription_processor.insert_audio_chunk(audioBytes)
+    
+def transcription_iteration():
+    global transcript_bench
+    with transcript_bench:
+        _,_,transcription = transcription_processor.process_iter()
+    return transcription if transcription != "" else None
+
+# function called when audio is finished, before closing the pipeline
+def finish_transcription():
+    global transcript_bench
+    with transcript_bench:
+        _,_,transcription = transcription_processor.finish()
+    return transcription if transcription != "" else None
+    # transcription_processor.init() # must do this if the processor will be reused
+
+transcipt_pipe = TranscribePipe(audio_chunk_received, transcription_iteration, finish_transcription)
+
+#### Translation Pipe ####
+def translate_iteration(input:str) -> str:
+    global translate_bench
     with translate_bench:
-        inputs = translator_tokenizer(transcription, return_tensors="pt", padding=True, truncation=True)
+        inputs = translator_tokenizer(input, return_tensors="pt", padding=True, truncation=True)
         translated = translator_model.generate(**inputs)
-        translated_text = [translator_tokenizer.decode(t, skip_special_tokens=True) for t in translated]
-    print(translated_text)
+        translated_text = ' '.join([translator_tokenizer.decode(t, skip_special_tokens=True) for t in translated])
+    
+    print(f'{input} -> {translated_text}')
+    return translated_text
+
+translate_pipe = TranslatePipe(translate_iteration)
+
+#### TTS Pipe ####
+def tts_iteration(input: str, send:Callable[[bytes], None]):
+    global tts_bench
     with tts_bench:
         chunks = tts_model.inference_stream(
-            translated_text[0],
+            input,
             "hi",
             gpt_cond_latent,
             speaker_embedding
         )
         for chunk in chunks:
-            out_wav.extend(postprocess(chunk))
+            send(postprocess(chunk))
+
+tts_pipe = TTSPipe(tts_iteration)
+
+out_wav = bytearray()
+def audio_out_iteration(input: bytes):
+    global out_wav
+    out_wav.extend(input)
+output_pipe = AudioOutPipe(audio_out_iteration)
+
+#### Connecting pipe sections ####
+transcipt_pipe.to(translate_pipe).to(tts_pipe).to(output_pipe)
+transcipt_pipe.open()
+
+def to_pipeline(input: bytes):
+    transcipt_pipe.receive(input)
+
+# simulating received audio stream
+simulator = StreamSimulator('benchmark_audios/156550__acclivity__a-dream-within-a-dream.wav', to_pipeline)
+simulator.start_in_thread()
     
 while not simulator.finished:
-    with transcript_bench:
-        _,_,transcription = transcription_processor.process_iter()
-    if(transcription != ''):
-        process_transcription(transcription)
+    time.sleep(1)
 
-_,_,transcription = transcription_processor.finish()     
-process_transcription(transcription)
-
-# transcription_processor.init() # must do this if the processor will be reused
+transcipt_pipe.close()
 
 save_to_wav(out_wav)
 
