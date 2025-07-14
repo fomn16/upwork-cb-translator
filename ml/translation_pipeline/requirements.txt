@@ -1,6 +1,11 @@
+# I highly recommend using conda to set up the environment. My setup was as follows
+
 #conda install cuda cudatoolkit cudnn -c nvidia
 #conda install gcc_linux-64=11 gxx_linux-64=11 -c conda-forge
-#pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 # comando acima instalou cuda 12.4
+#pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 # command above installed cuda 12.4 -> "cu124" at the end of this line
+
+# you'll need to update the paths below with your .conda path (most likely, just swapping fomn by your username in linux
+
 #export CUDA_HOME=/home/fomn/.conda/envs/env
 #export PATH=$CUDA_HOME/bin:$PATH
 #export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
@@ -8,11 +13,11 @@
 #export CC=/home/fomn/.conda/envs/env/bin/x86_64-conda-linux-gnu-gcc
 #export CXX=/home/fomn/.conda/envs/env/bin/x86_64-conda-linux-gnu-g++
 
-mkl-service
-librosa
-transformers
-coqui-TTS
-deepspeed
-faster_whisper
-sentencepiece
-sacremoses
+mkl-service==2.5.2
+librosa==0.11.0
+transformers==4.51.3
+coqui-TTS==0.26.2
+deepspeed==0.17.2
+faster_whisper==1.1.1
+sentencepiece==0.2.0
+sacremoses==0.1.1
