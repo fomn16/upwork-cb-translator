@@ -41,7 +41,7 @@ def save_to_wav(wav):
     torchaudio.save(path, audio_tensor, sample_rate=24000)
 
 # initializing transcriptor
-asr = FasterWhisperASR(input_language, "large-v2")  #options: tiny.en,tiny,base.en,base,small.en,small,medium.en,medium,large-v1,large-v2,large-v3,large,large-v3-turbo
+asr = FasterWhisperASR(input_language, "small")  #options: tiny.en,tiny,base.en,base,small.en,small,medium.en,medium,large-v1,large-v2,large-v3,large,large-v3-turbo
 asr.use_vad()
 transcription_processor = OnlineASRProcessor(asr)
 transcription_processor.init()
@@ -137,7 +137,11 @@ simulator.start_in_thread()
 while not simulator.finished:
     time.sleep(1)
 
+latency = time.perf_counter()
+
 transcipt_pipe.close()
+
+print(f'latency after end of stream = {time.perf_counter() - latency}')
 
 save_to_wav(out_wav)
 
