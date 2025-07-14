@@ -2,7 +2,7 @@
 
 #conda install cuda cudatoolkit cudnn -c nvidia
 #conda install gcc_linux-64=11 gxx_linux-64=11 -c conda-forge
-#pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 # command above installed cuda 12.4 -> "cu124" at the end of this line
+#pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 # "conda install cuda" installed cuda 12.4 -> "cu124" at the end of this line
 
 # you'll need to update the paths below with your .conda path (most likely, just swapping fomn by your username in linux
 
