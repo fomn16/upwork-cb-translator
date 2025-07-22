@@ -21,6 +21,9 @@ import time
 input_language = "en"
 output_language = "hi"
 
+voiceFile = "arnold_original.mp3"
+audioFile = "156550__acclivity__a-dream-within-a-dream.wav"
+
 # Helper functions
 def postprocess(wav): # taken from the coqui streaming example code
     if isinstance(wav, list):
@@ -41,7 +44,7 @@ def save_to_wav(wav):
     torchaudio.save(path, audio_tensor, sample_rate=24000)
 
 # initializing transcriptor
-asr = FasterWhisperASR(input_language, "small")  #options: tiny.en,tiny,base.en,base,small.en,small,medium.en,medium,large-v1,large-v2,large-v3,large,large-v3-turbo
+asr = FasterWhisperASR(input_language, "medium")  #options: tiny.en,tiny,base.en,base,small.en,small,medium.en,medium,large-v1,large-v2,large-v3,large,large-v3-turbo
 asr.use_vad()
 transcription_processor = OnlineASRProcessor(asr)
 transcription_processor.init()
@@ -59,7 +62,7 @@ tts_model = Xtts.init_from_config(tts_config)
 tts_model.load_checkpoint(tts_config, checkpoint_dir=tts_model_dir, use_deepspeed=True)
 if torch.cuda.is_available():
     tts_model.cuda()
-gpt_cond_latent, speaker_embedding = tts_model.get_conditioning_latents(audio_path=["felipe.wav"])
+gpt_cond_latent, speaker_embedding = tts_model.get_conditioning_latents(audio_path=["testing_voices/" + voiceFile])
 
 # declaring objects that will handle benchmarks
 transcript_bench = Benchmark("transcript")
@@ -131,7 +134,7 @@ def to_pipeline(input: bytes):
     transcipt_pipe.receive(input)
 
 # simulating received audio stream
-simulator = StreamSimulator('benchmark_audios/156550__acclivity__a-dream-within-a-dream.wav', to_pipeline)
+simulator = StreamSimulator("benchmark_audios/" + audioFile, to_pipeline)
 simulator.start_in_thread()
     
 while not simulator.finished:
