@@ -10,7 +10,7 @@ from transformers import MarianMTModel, MarianTokenizer
 
 # TTS
 from TTS.tts.configs.xtts_config import XttsConfig
-from TTS.tts.models.xtts import Xtts
+from custom_implementations.TTS.tts.models.xtts import Xtts
 from huggingface_hub import snapshot_download
 import torchaudio
 
