@@ -62,3 +62,7 @@ ml/models/xtts/cusom_implementation/tts/layers/xtts/__pycache__/perceiver_encode
 ml/models/xtts/cusom_implementation/tts/models/__pycache__/xtts.cpython-310.pyc
 
 *.pyc
+ml/translation_pipeline/benchmark_audios/common_voice_bn_42452248.mp3
+ml/translation_pipeline/testing_voices/arnold_original.mp3
+ml/translation_pipeline/testing_voices/dumbledore_original.mp3
+ml/translation_pipeline/testing_voices/zac-efron_original.mp3
