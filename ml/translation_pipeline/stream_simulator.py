@@ -11,6 +11,7 @@ class StreamSimulator:
         self,
         audio_dir: str,
         received: Callable[[bytes], None],
+        start_of_clip: Callable[[str], None],
         end_of_clip: Callable[[None], None],
         chunk_size: int = 940,
         target_rate: int = 16000,
@@ -19,7 +20,8 @@ class StreamSimulator:
         """
         :param audio_dir:     path to folder containing input WAV files
         :param received:     callback (bytes), function to call passing in bytes of audio
-        :param received:     callback (receives no params) function to call when an audio clip finishes streaming
+        :param start_of_clip:     callback (receives string with file name) function to call when an audio clip starts streaming
+        :param end_of_clip:     callback (receives no params) function to call when an audio clip finishes streaming
         :param chunk_size:   # samples PER chunk at target_rate
         :param target_rate:  output sample rate (Hz), here 16 kHz
         :param between_clip_delay:  float that says how long to wait (seconds) between clips being sent
@@ -33,6 +35,7 @@ class StreamSimulator:
         self._stop_event = threading.Event()  # Event to signal stopping
 
         self.between_clip_delay = between_clip_delay
+        self.start_of_clip = start_of_clip
         self.end_of_clip = end_of_clip
 
     def start(self):
@@ -51,7 +54,7 @@ class StreamSimulator:
                     delay = self.chunk_size / self.target_rate
                     # dtype for incoming PCM:
                     dtype_in = np.dtype(f'<i{sampwidth}')
-                    print(f"started streaming {filename}")
+                    self.start_of_clip(filename)
 
                     while not self._stop_event.is_set():  # Check if stop is requested
                         raw = wf.readframes(in_chunk)

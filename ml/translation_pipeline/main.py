@@ -127,17 +127,19 @@ def tts_iteration(input: str, send:Callable[[bytes], None]):
 tts_pipe = TTSPipe(tts_iteration)
 
 out_wav = bytearray()
-waiting_first_slice_byte = True
-end_slice_stream_time = time.perf_counter()
+waiting_first_clip_byte = True
+end_clip_stream_time = start_clip_stream_time = time.perf_counter()
 def audio_out_iteration(input: bytes):
-    global waiting_first_slice_byte
-    global end_slice_stream_time
+    global waiting_first_clip_byte
+    global end_clip_stream_time
+    global start_clip_stream_time
     global out_wav
 
-    if(waiting_first_slice_byte):
+    if(waiting_first_clip_byte):
         if(detect_speech(input)):
-            print(f"detected audio latency for slice: {time.perf_counter() - end_slice_stream_time}")
-            waiting_first_slice_byte = False
+            print(f"detected audio latency for clip (end): {time.perf_counter() - end_clip_stream_time}")
+            print(f"detected audio latency for clip (start): {time.perf_counter() - start_clip_stream_time}")
+            waiting_first_clip_byte = False
     out_wav.extend(input)
 output_pipe = AudioOutPipe(audio_out_iteration)
 
@@ -148,15 +150,20 @@ transcipt_pipe.open()
 def to_pipeline(input: bytes):
     transcipt_pipe.receive(input)
 
-def audio_slice_ended():
-    global waiting_first_slice_byte
-    global end_slice_stream_time
-    end_slice_stream_time = time.perf_counter()
-    waiting_first_slice_byte = True
-    print('audio slice ended streaming')
+def audio_clip_ended():
+    global waiting_first_clip_byte
+    global end_clip_stream_time
+    end_clip_stream_time = time.perf_counter()
+    waiting_first_clip_byte = True
+    print('audio clip ended streaming')
+
+def audio_clip_started(clip_name: str):
+    global start_clip_stream_time
+    start_clip_stream_time = time.perf_counter()
+    print(f'started streaming {clip_name}')
 
 # simulating received audio stream
-simulator = StreamSimulator("benchmark_audios/", to_pipeline, audio_slice_ended)
+simulator = StreamSimulator("benchmark_audios/", to_pipeline, audio_clip_started, audio_clip_ended)
 simulator.start_in_thread()
     
 while not simulator.finished:
