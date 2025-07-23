@@ -43,6 +43,12 @@ def save_to_wav(wav):
     audio_tensor = torch.from_numpy(audio_np).unsqueeze(0) # Unsqueeze to add channel dimension (1, N)
     torchaudio.save(path, audio_tensor, sample_rate=24000)
 
+def detect_speech(audio_bytes, threshold=0.01):
+    audio = np.frombuffer(audio_bytes, dtype=np.int16)
+    audio = audio.astype(np.float32) / np.iinfo(np.int16).max
+    energy = np.sqrt(np.mean(audio**2))
+    return energy > threshold
+
 # initializing transcriptor
 asr = FasterWhisperASR(input_language, "medium")  #options: tiny.en,tiny,base.en,base,small.en,small,medium.en,medium,large-v1,large-v2,large-v3,large,large-v3-turbo
 asr.use_vad()
@@ -121,8 +127,17 @@ def tts_iteration(input: str, send:Callable[[bytes], None]):
 tts_pipe = TTSPipe(tts_iteration)
 
 out_wav = bytearray()
+waiting_first_slice_byte = True
+end_slice_stream_time = time.perf_counter()
 def audio_out_iteration(input: bytes):
+    global waiting_first_slice_byte
+    global end_slice_stream_time
     global out_wav
+
+    if(waiting_first_slice_byte):
+        if(detect_speech(input)):
+            print(f"detected audio latency for slice: {time.perf_counter() - end_slice_stream_time}")
+            waiting_first_slice_byte = False
     out_wav.extend(input)
 output_pipe = AudioOutPipe(audio_out_iteration)
 
@@ -133,8 +148,15 @@ transcipt_pipe.open()
 def to_pipeline(input: bytes):
     transcipt_pipe.receive(input)
 
+def audio_slice_ended():
+    global waiting_first_slice_byte
+    global end_slice_stream_time
+    end_slice_stream_time = time.perf_counter()
+    waiting_first_slice_byte = True
+    print('audio slice ended streaming')
+
 # simulating received audio stream
-simulator = StreamSimulator("benchmark_audios/" + audioFile, to_pipeline)
+simulator = StreamSimulator("benchmark_audios/", to_pipeline, audio_slice_ended)
 simulator.start_in_thread()
     
 while not simulator.finished:
