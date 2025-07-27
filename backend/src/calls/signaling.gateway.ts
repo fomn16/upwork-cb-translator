@@ -12,7 +12,8 @@ import {
     MediaKind,
     AppData,
     Consumer,
-    PlainTransport
+    PlainTransport,
+    RtpCodecParameters
 } from 'mediasoup/node/lib/types';
 import { randomInt } from 'crypto';
 import { getPort } from './port';
@@ -33,6 +34,45 @@ const translationConsumers = new Map<string, Consumer>();
 
 let io: Server;
 
+/* storing default configurations for bidirectional processing connections */
+class BidirectionalConnectionSettings{
+    enableVoiceClone: boolean
+    processingServerUrl: string
+    processingServerInitiateMethod: string
+    successMessage: string
+    errorMessage: string
+    RTPCodecParameter:RtpCodecParameters[]
+}
+function getSettingsForKind(kind:'audio'|'video', codecs:RtpCodecParameters[]){
+    let settings = new BidirectionalConnectionSettings()
+    settings.enableVoiceClone = false
+    settings.processingServerUrl = 'http://0.0.0.0:2002/'
+
+    if(kind == 'audio'){
+        settings.processingServerInitiateMethod = 'translation/initiate'
+        settings.successMessage = '✅ Translation pipeline initiated:'
+        settings.errorMessage = '❌ Error initiating translation pipeline:'
+        settings.RTPCodecParameter = [
+            {
+                mimeType: 'audio/opus',
+                payloadType:codecs[0].payloadType,
+                clockRate:codecs[0].clockRate,
+                channels:codecs[0].channels || 2
+            }
+        ]
+    }
+    else{
+        settings.processingServerInitiateMethod = 'video/initiate'
+        settings.successMessage = '✅ Video capture pipeline initiated:'
+        settings.errorMessage = '❌ Error initiating video capture pipeline:'
+        settings.RTPCodecParameter = [{
+            mimeType:'video/VP8',
+            payloadType:101,
+            clockRate: 90000
+        }]
+    }
+    return settings;
+}
 
 @WebSocketGateway({
     cors: {
@@ -69,6 +109,104 @@ export class SignalingGateway implements OnGatewayInit {
         const rtpCapabilities = this.mediasoupService.getRtpCapabilities();
         socket.emit('rtp-capabilities', rtpCapabilities);
     }
+    
+    async setupBidirectionalConnection(socket:Socket, producer:Producer<AppData>, kind:"audio"|"video", targetLang:string): Promise<Producer<AppData> | null>{
+        let processedProducer: Producer<AppData> | null = null;
+        const sendTransport = await this.mediasoupService.createPlainTransport("send");
+        const recvTransport = await this.mediasoupService.createPlainTransport("recv");
+        const sessionId = `${socket.id}@${targetLang}`
+
+        const rtpPort = getPort();
+
+        // [Mediasoup -> Track Processor]
+        translationTransports.set(`${socket.id}-${kind}-send`, sendTransport);
+        await sendTransport.connect({
+            ip: '0.0.0.0',
+            port: rtpPort,
+        });
+
+        const consumer = await sendTransport.consume({
+            producerId: producer.id,
+            rtpCapabilities: this.mediasoupService.getRtpCapabilities(),
+        });
+        translationConsumers.set(`${socket.id}-${kind}`, consumer);
+
+        // [Track Processor -> Mediasoup]
+        translationTransports.set(`${socket.id}-${kind}-recv`, recvTransport);
+        await recvTransport.connect({
+            ip: '0.0.0.0',                    // Processing program sends the track to this IP
+            port: recvTransport.tuple.localPort,// Processing program sends the track to this port
+        });
+
+        const codec = consumer.rtpParameters.codecs[0];
+        const payloadType = codec.payloadType;
+        const codecName = codec.mimeType.split('/')[1];
+        const clockRate = codec.clockRate;
+        const channels = codec.channels || 2;
+        const ssrc = randomInt(1, 0x7FFFFFFF);
+        const connectionSettings = getSettingsForKind(kind, consumer.rtpParameters.codecs);
+
+        let payload = {
+            producerId: producer.id,
+            rtpPort: rtpPort,
+            ip: recvTransport.tuple.localIp,
+            codec: codecName,
+            clockRate,
+            channels,
+            payloadType,
+            ssrc,
+            outputPort: recvTransport.tuple.localPort,
+            targetLang,
+            sessionId,
+            enableVoiceClone: connectionSettings.enableVoiceClone, // when this is updated to be selectable by the user, receive it as a parameter instead
+        };
+
+        fetch(connectionSettings.processingServerUrl + connectionSettings.processingServerInitiateMethod, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        })
+            .then(response => response.json())
+            .then(data => {
+                console.log(connectionSettings.successMessage, data);
+            })
+            .catch(error => {
+                console.error(connectionSettings.errorMessage, error);
+            });
+
+        // Consume the track data from the track processor
+        processedProducer = await recvTransport.produce({
+            kind: kind,
+            rtpParameters: {
+                codecs: connectionSettings.RTPCodecParameter,
+                encodings: [{ssrc}]
+            },
+        });
+        translationProducers.set(`${socket.id}-${kind}`, processedProducer);
+
+        // This is only for debugging the blank/dropping video problem
+        if (kind === "video") {
+            console.log("📹 Video Producer Details:");
+            console.log(`  - Producer ID: ${processedProducer.id}`);
+            console.log(`  - Kind: ${processedProducer.kind}`);
+            console.log(`  - Paused: ${processedProducer.paused}`);
+            console.log(`  - Closed: ${processedProducer.closed}`);
+            console.log("  - RTP Parameters:");
+            console.log(JSON.stringify(processedProducer.rtpParameters, null, 2));
+            console.log("  - Associated Transports:");
+            console.log(`    - Send Transport ID: ${sendTransport.id}`);
+            console.log(`    - Receive Transport ID: ${recvTransport.id}`);
+            console.log("  - Session Details:");
+            console.log(`    - Session ID: ${sessionId}`);
+            console.log(`    - Target Language: ${targetLang}`);
+            console.log(`    - RTP Port: ${rtpPort}`);
+            console.log(`    - Local Port: ${recvTransport.tuple.localPort}`);
+        }
+
+        return processedProducer;
+    }
 
     @SubscribeMessage('create-transport')
     async handleCreateTransport(
@@ -94,113 +232,72 @@ export class SignalingGateway implements OnGatewayInit {
                     return;
                 }
                 const targetLang = 'eng'; // Default target language
-                const sessionId = `${socket.id}@${targetLang}`
 
                 const producer = await transport.produce({
                     kind: kind as MediaKind,
                     rtpParameters,
                 });
+
                 userProducers.set(`${socket.id}-${kind}`, producer);
-
-
-                let ffmpegProducer: Producer<AppData> | null = null;
-                let ffmpegVideoProducer: Producer<AppData> | null = null;
-                const recvTransport = await this.mediasoupService.createPlainTransport("recv");
-                const audioPlainTransport = await this.mediasoupService.createPlainTransport("send");
-                if (kind === 'audio') {
-                    const rtpPort = getPort();
-                    // [Mediasoup -> FFmpeg]
-                    translationTransports.set(`${socket.id}-send`, audioPlainTransport);
-                    await audioPlainTransport.connect({
-                        ip: '127.0.0.1',
-                        port: rtpPort,
-                    });
-
-                    const consumer = await audioPlainTransport.consume({
-                        producerId: producer.id,
-                        rtpCapabilities: this.mediasoupService.getRtpCapabilities(),
-                    });
-                    translationConsumers.set(`${socket.id}-audio`, consumer);
-
-                    // [FFmpeg -> Mediasoup]
-
-                    translationTransports.set(`${socket.id}-recv`, recvTransport);
-                    await recvTransport.connect({
-                        ip: '127.0.0.1',    // FFmpeg sends audio to this IP
-                        port: recvTransport.tuple.localPort,   // FFmpeg sends audio to this port
-                    });
-
-                    const codec = consumer.rtpParameters.codecs[0];
-                    const payloadType = codec.payloadType;
-                    const codecName = codec.mimeType.split('/')[1];
-                    const clockRate = codec.clockRate;
-                    const channels = codec.channels || 2;
-                    const ssrc = randomInt(1, 0x7FFFFFFF);
-
-                    const payload = {
-                        producerId: producer.id,
-                        rtpPort: rtpPort,
-                        ip: audioPlainTransport.tuple.localIp,
-                        codec: codecName,
-                        clockRate,
-                        channels,
-                        payloadType,
-                        ssrc,
-                        outputPort: recvTransport.tuple.localPort,
-                        targetLang,
-                        sessionId,
-                        enableVoiceClone: false
-                    };
-
-                    fetch("http://0.0.0.0:2002/translation/initiate", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json"
-                        },
-                        body: JSON.stringify(payload)
-                    })
-                        .then(response => response.json())
-                        .then(data => {
-                            console.log("✅ Translation pipeline initiated:", data);
-                        })
-                        .catch(error => {
-                            console.error("❌ Error initiating translation pipeline:", error);
-                        });
-
-                    // Consume the audio data from FFmpeg
-                    ffmpegProducer = await recvTransport.produce({
-                        kind: 'audio',
-                        rtpParameters: {
-                            codecs: [
-                                {
-                                    mimeType: 'audio/opus',
-                                    payloadType,
-                                    clockRate,
-                                    channels
-                                },
-                            ],
-                            encodings: [{ ssrc }]
-                        },
-                    });
-                    translationProducers.set(`${socket.id}-audio`, ffmpegProducer);
-                }
+                let processedProducer = await this.setupBidirectionalConnection(socket, producer, kind, targetLang)
 
                 socket.join(roomCode);
-
                 if (!rooms.has(roomCode)) {
                     rooms.set(roomCode, { producers: new Map() });
                 }
+                
+                if(processedProducer != null){
+                    const producerKey = `${socket.id}-${kind}`;
 
-                if (kind === 'audio') {
-                    if (ffmpegProducer != null) {
-                        rooms.get(roomCode)!.producers.set(`${socket.id}-ffmpeg`, ffmpegProducer);
-                        socket.to(roomCode).emit('new-producer', {
-                            producerId: ffmpegProducer.id,
-                            socketId: socket.id,
-                            kind,
-                        });
+                    // Logging producer stats for debugging
+                    setInterval(async () => {
+                        try {
+                            const stats = await processedProducer.getStats();
+                            console.log(`📊 ${producerKey} transport stats:`, stats);
+                        } catch (err) {
+                            console.log('Stats error:', err);
+                        }
+                    }, 5000);
+
+                    rooms.get(roomCode)!.producers.set(producerKey, processedProducer);
+
+                    socket.to(roomCode).emit('new-producer', {
+                        producerId: processedProducer.id,
+                        socketId: socket.id,
+                        kind,
+                    });
+
+                    // TODO: something is wrong with the processedProducer for video (wigh drop rate 
+                    // when a consumer tries to consume from it, while the original producer workds fine).
+                    // try to diff them for debugging
+
+                    if(kind == 'video'){
+                        setInterval(async () => {
+                            console.log('---------------------------------------------------------')
+                            console.log('Original Producer:', {
+                                id: producer.id,
+                                kind: producer.kind,
+                                rtpParameters: producer.rtpParameters,
+                                appData: producer.appData,
+                                paused: producer.paused,
+                                score: producer.score,
+                                stats: await producer.getStats(),
+                            });
+
+                            console.log('Processed Producer:', {
+                                id: processedProducer.id,
+                                kind: processedProducer.kind,
+                                rtpParameters: processedProducer.rtpParameters,
+                                appData: processedProducer.appData,
+                                paused: processedProducer.paused,
+                                score: processedProducer.score,
+                                stats: await processedProducer.getStats(),
+                            });
+                        }, 5000);
                     }
-                } else {
+
+                }
+                else{
                     rooms.get(roomCode)!.producers.set(socket.id, producer);
                     socket.to(roomCode).emit('new-producer', {
                         producerId: producer.id,
@@ -209,97 +306,9 @@ export class SignalingGateway implements OnGatewayInit {
                     });
                 }
 
-
-                // =======
-                if (kind === 'video') {
-                    const rtpPort = getPort();  // Allocate a dynamic RTP port
-                    // const rtpPort = 25001;  // Allocate a dynamic RTP port
-                    const videoPlainTransport = await this.mediasoupService.createPlainTransport("send");
-                    translationTransports.set(`${socket.id}-send`, videoPlainTransport);
-                    translationTransports.set(`${socket.id}-video`, videoPlainTransport);
-                    await videoPlainTransport.connect({
-                        ip: '127.0.0.1',
-                        port: rtpPort,
-                    });
-
-                    const consumer = await videoPlainTransport.consume({
-                        producerId: producer.id,
-                        rtpCapabilities: this.mediasoupService.getRtpCapabilities(),
-                    });
-                    translationConsumers.set(`${socket.id}-video`, consumer);
-
-                    const codec = consumer.rtpParameters.codecs[0];
-                    const payloadType = codec.payloadType;
-                    const codecName = codec.mimeType.split('/')[1]; // Should be "H264"
-                    const clockRate = codec.clockRate;
-                    const ssrc = randomInt(1, 0x7FFFFFFF);
-
-                    const payload = {
-                        rtpPort: rtpPort,
-                        ip: videoPlainTransport.tuple.localIp,
-                        codec: codecName,
-                        clockRate,
-                        payloadType,
-                        targetPort: recvTransport.tuple.localPort,
-                        sessionId,
-                    };
-
-                    fetch("http://0.0.0.0:2002/video/initiate", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(payload),
-                    })
-                        .then(res => res.json())
-                        .then(data => console.log("✅ Video capture pipeline initiated:", data))
-                        .catch(err => console.error("❌ Error initiating video capture pipeline:", err));
-
-                    console.log(`🔄 Video Plain Transport created for session ${sessionId} with RTP port ${rtpPort}, ${recvTransport.tuple.localPort}`);
-                    ffmpegVideoProducer = await recvTransport.produce({
-                        kind: 'video',
-                        rtpParameters: {
-                            codecs: [
-                                {
-                                    mimeType: "video/VP8",
-                                    payloadType: 100, // match Mediasoup router's preferredPayloadType
-                                    clockRate: 90000,
-                                    parameters: {
-                                        "packetization-mode": 1,
-                                        "profile-level-id": "42e01f",
-                                        "level-asymmetry-allowed": 1
-                                    },
-                                    rtcpFeedback: [
-                                        { type: "nack" },
-                                        { type: "nack", parameter: "pli" },
-                                        { type: "ccm", parameter: "fir" },
-                                        { type: "goog-remb" }
-                                    ]
-                                }
-                            ],
-                            encodings: [{ ssrc: ssrc }]
-                        },
-                    })
-
-                    // setInterval(() => {
-                    //     ffmpegVideoProducer?.getStats().then(stats => {
-                    //         console.log(`FFmpeg Video Producer Stats: ${JSON.stringify(stats)}`);
-                    //     }).catch(err => {
-                    //         console.error(`Error getting FFmpeg Video Producer stats: ${err}`);
-                    //     });
-                    // }, 1000); // Keep the connection alive
-
-                    io.emit('new-producer', {
-                        producerId: ffmpegVideoProducer.id,
-                        socketId: socket.id,
-                        kind: 'video',
-                    });
-                }
-                // ====
-
                 socket.emit('produced', { id: producer.id });
             });
-        }
-
-        if (direction === 'recv') {
+        } else {
             socket.on('connect-transport-recv', async ({ dtlsParameters }) => {
                 await transport.connect({ dtlsParameters });
                 socket.emit('transport-connected-recv');
@@ -321,15 +330,18 @@ export class SignalingGateway implements OnGatewayInit {
         const router = this.mediasoupService.getRouter();
 
         if (!router.canConsume({ producerId, rtpCapabilities })) {
+            console.error('❌ Cannot consume this stream');
             socket.emit('consume-error', 'Cannot consume this stream');
             return;
         }
 
         const transport = userTransports.get(`${socket.id}-recv`);
         if (!transport) {
+            console.error('❌ No transport found for receiving media');
             socket.emit('consume-error', 'No transport found');
             return;
         }
+        console.log(`✅ Transport connected: ${transport.id}`);
 
         const consumer = await transport.consume({
             producerId,
@@ -337,12 +349,29 @@ export class SignalingGateway implements OnGatewayInit {
             paused: false,
         });
 
+        console.log(`✅ Consumer created: ${consumer.id}`);
+        console.log(`  - Kind: ${consumer.kind}`);
+        console.log(`  - RTP Parameters:`, consumer.rtpParameters);
+
         socket.emit('consumed', {
             id: consumer.id,
             kind: consumer.kind,
             rtpParameters: consumer.rtpParameters,
             producerId,
         });
+
+        // Logs the stats for debugging the video problem. You can see almost all the frames sent by
+        // the python server are dropped, even though the stats from the producer itself seem ok
+        setInterval(async () => {
+            try {
+                const stats = await consumer.getStats();
+                console.log(`📊 ${consumer.id} consumer stats:`, stats);
+                const Transportstats = await transport.getStats();
+                console.log(`📊 ${transport.id} consumer transport stats:`, Transportstats);
+            } catch (err) {
+                console.log('Stats error:', err);
+            }
+        }, 5000);
 
         await consumer.resume();
     }

@@ -45,7 +45,7 @@ else:
 if IS_PROD:
     MEDIASERVER_IP = "10.10.0.82"
 else:
-    MEDIASERVER_IP = "127.0.0.1"
+    MEDIASERVER_IP = "0.0.0.0"
 
 
 frames_arrived = False
@@ -306,9 +306,9 @@ def save_to_wav(audio_bytes: bytes, sample_rate=48000, num_channels=2, sample_wi
 # Initializes the file used to read input from the network
 def write_sdp_file(payload_type, codec_name, clock_rate, channels, rtp_port):
     sdp_content = f"""v=0
-o=- 0 0 IN IP4 127.0.0.1
+o=- 0 0 IN IP4 0.0.0.0
 s=Mediasoup Audio
-c=IN IP4 127.0.0.1
+c=IN IP4 0.0.0.0
 t=0 0
 m=audio {rtp_port} RTP/AVP {payload_type}
 a=rtpmap:{payload_type} {codec_name}/{clock_rate}/{channels}
@@ -451,8 +451,10 @@ def pump_audio(
             while len(buf) >= segment_size:
                 chunk_count += 1
                 seg, buf = buf[:segment_size], buf[segment_size:]
+                # temporarily skipping audio pipeline to debug the video
+                output_queue.enqueue(seg)
                 ##############################################################
-                if seamless_streaming == 1:
+                '''if seamless_streaming == 1:
                     process_translation_chunk(
                         seg,
                         target_lang=target_lang,
@@ -479,7 +481,7 @@ def pump_audio(
                     )
                     
                     
-                    output_queue.enqueue(seg)
+                    output_queue.enqueue(seg)'''
 
     finally:
         output_queue.closed = True
@@ -629,7 +631,7 @@ def write_video_sdp_file(payload_type, codec_name, clock_rate, rtp_port):
     return path
 
 
-def run_ffmpeg_video_pipe(sdp_path, width=640, height=480):
+def run_ffmpeg_video_pipe(sdp_path, width=640, height=480, fps=15):
     print(f"Running FFmpeg with SDP path: {sdp_path}")
     cmd = [
         "ffmpeg",
@@ -642,6 +644,7 @@ def run_ffmpeg_video_pipe(sdp_path, width=640, height=480):
         "-i",
         sdp_path,
         "-an",  # no audio
+        "-r", str(fps),  # Cap the frame rate (e.g., 15 fps)
         "-f",
         "rawvideo",
         "-pix_fmt",
@@ -657,9 +660,6 @@ def run_ffmpeg_video_pipe(sdp_path, width=640, height=480):
 
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
-FRAME_SIZE = FRAME_WIDTH * FRAME_HEIGHT * 3  # for bgr24
-FPS = 250
-NUM_OF_SECONDS = 5
 
 
 
@@ -677,14 +677,13 @@ def store_frames(
         while True:
             count += 1
             raw_frame = proc.stdout.read(frame_size)
-            # print(f"📥 Received {len(raw_frame)} bytes for session {session_id} {count}")
             if not raw_frame:
                 print("📤 FFmpeg pipe ended")
                 break
             frame = np.frombuffer(raw_frame, np.uint8).reshape(
                 (frame_height, frame_width, 3)
             )
-            # print(f"📦 Received frame for session {session_id} ({frame.shape})")
+
             video_frames_storage.setdefault(session_id, []).append(frame)
 
 
@@ -712,8 +711,9 @@ class VideoCaptureRequest(BaseModel):
     codec: str
     clockRate: int
     rtpPort: int
-    targetPort: int
+    outputPort: int
     sessionId: str
+    ssrc: int
 
 
 @app.post("/video/initiate")
@@ -749,21 +749,22 @@ async def initiate_video_capture(data: VideoCaptureRequest):
         ),
         daemon=True,
     ).start()
-    
-    # threading.Thread(
-    #     target=send_frames_to_mediasoup,
-    #     args=(
-    #         frame_generator(data.sessionId),
-    #         MEDIASERVER_IP,  # your Mediasoup plain transport IP
-    #         data.targetPort  # your Mediasoup plain transport video port
-    #     ),
-    #     daemon=True,
-    # ).start()
+
+    threading.Thread(
+        target=send_frames_to_mediasoup,
+        args=(
+            frame_generator(data.sessionId),
+            MEDIASERVER_IP,  # Mediasoup plain transport IP
+            data.outputPort,  # Mediasoup plain transport video port
+            data.payloadType,
+            data.ssrc,
+            FRAME_WIDTH,
+            FRAME_HEIGHT
+        ),
+        daemon=True,
+    ).start()
 
     return {"status": "Frame-based video capture started."}
-
-
-# 640 x 480
 
 
 if __name__ == "__main__":

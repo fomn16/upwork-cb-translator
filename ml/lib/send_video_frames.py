@@ -1,35 +1,53 @@
 import subprocess
-import threading
+from subprocess import Popen
+import os
+import tempfile
+import time
 
 video_frames_storage = {}
-def send_frames_to_mediasoup(frame_generator, target_ip, target_port, width=640, height=480, fps=15):
-    print(f"{target_port} - Starting to send frames to Mediasoup at {target_ip}:{target_port}...")
+def send_frames_to_mediasoup(frame_generator, target_ip, target_port, payload_type: int, ssrc: int, width=640, height=480, fps=15):
     cmd = [
         "ffmpeg",
-        "-f", "rawvideo",
-        "-pix_fmt", "bgr24",
-        "-s", f"{width}x{height}",
-        "-r", str(fps),
-        "-i", "pipe:0",
-        "-c:v", "libvpx",
-        "-b:v", "1M",
-        "-deadline", "realtime",  # Optimize for low latency
-        "-cpu-used", "5",
-        "-f", "rtp",
-        f"rtp://{target_ip}:{target_port}"
+        "-f",
+        "rawvideo",  # Input format: raw video
+        "-pix_fmt",
+        "yuv420p",  # Pixel format for VP8
+        "-s",
+        f"{width}x{height}",  # Resolution (adjust as needed)
+        "-r",
+        f"{fps}",  # Frame rate (adjust as needed)
+        "-i",
+        "pipe:0",  # Input from stdin
+        "-c:v",
+        "libvpx",  # VP8 codec
+        "-b:v",
+        "1M",  # Bitrate (adjust as needed)
+        "-payload_type",
+        str(payload_type),
+        "-ssrc",
+        str(ssrc),
+        "-f",
+        "rtp",
+        f"rtp://{target_ip}:{target_port}",
     ]
-
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-
+    proc =  subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+    )
+    frame_interval = 1.0 / fps
     try:
         for frame in frame_generator:
-            proc.stdin.write(frame)
+            flat_frame = frame.tobytes()  # Convert 3D array to flat byte array
+            proc.stdin.write(flat_frame)  # Write the flat frame to FFmpeg's stdin
             proc.stdin.flush()
+            time.sleep(frame_interval)  # basic timing to avoid too much jitter on mediasoup
     except BrokenPipeError:
         print("⚠️ FFmpeg pipe closed, stopping sending.")
+    except Exception as e:
+        print(f"⚠️ Unexpected error: {e}")
     finally:
         proc.stdin.close()
         proc.wait()
+        print("✅ FFmpeg process terminated.")
 
 
 

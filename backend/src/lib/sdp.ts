@@ -12,9 +12,9 @@ export const createSdpText = (rtpParameters) => {
     const audioCodecInfo = getCodecInfoFromRtpParameters('audio', audio.rtpParameters);
 
     return `v=0
-  o=- 0 0 IN IP4 127.0.0.1
+  o=- 0 0 IN IP4 0.0.0.0
   s=FFmpeg
-  c=IN IP4 127.0.0.1
+  c=IN IP4 0.0.0.0
   t=0 0
   m=video ${video.remoteRtpPort} RTP/AVP ${videoCodecInfo.payloadType} 
   a=rtpmap:${videoCodecInfo.payloadType} ${videoCodecInfo.codecName}/${videoCodecInfo.clockRate}
