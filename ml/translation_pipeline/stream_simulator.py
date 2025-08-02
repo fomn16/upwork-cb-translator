@@ -13,9 +13,10 @@ class StreamSimulator:
         received: Callable[[bytes], None],
         start_of_clip: Callable[[str], None],
         end_of_clip: Callable[[None], None],
+        can_start_next_clip: Callable[[None], bool],
         chunk_size: int = 940,
         target_rate: int = 16000,
-        between_clip_delay: float = 5
+        between_clip_delay: float = 10
     ):
         """
         :param audio_dir:     path to folder containing input WAV files
@@ -37,6 +38,7 @@ class StreamSimulator:
         self.between_clip_delay = between_clip_delay
         self.start_of_clip = start_of_clip
         self.end_of_clip = end_of_clip
+        self.can_start_next_clip = can_start_next_clip
 
     def start(self):
         """Start the simulation in the current thread."""
@@ -95,6 +97,12 @@ class StreamSimulator:
                     while(time.perf_counter() - start_delay < self.between_clip_delay):
                         self.received(empty_bytes)  # Deliver empty audio
                         time.sleep(delay)
+                    while(not self.can_start_next_clip()):  #wait for pipeline to be ready to start next clip
+                        start_delay = time.perf_counter()
+                        while(time.perf_counter() - start_delay < self.between_clip_delay):
+                            self.received(empty_bytes)  # Deliver empty audio
+                            time.sleep(delay)
+
         self.finished = True
 
     def start_in_thread(self):

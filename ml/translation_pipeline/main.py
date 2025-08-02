@@ -24,6 +24,11 @@ output_language = "hi"
 voiceFile = "arnold_original.mp3"
 audioFile = "156550__acclivity__a-dream-within-a-dream.wav"
 
+totalStats = {
+    "start_start":[],
+    "end_start":[],
+}
+
 # Helper functions
 def postprocess(wav): # taken from the coqui streaming example code
     if isinstance(wav, list):
@@ -42,12 +47,6 @@ def save_to_wav(wav):
     audio_np = np.frombuffer(wav, dtype=np.int16)
     audio_tensor = torch.from_numpy(audio_np).unsqueeze(0) # Unsqueeze to add channel dimension (1, N)
     torchaudio.save(path, audio_tensor, sample_rate=24000)
-
-def detect_speech(audio_bytes, threshold=0.01):
-    audio = np.frombuffer(audio_bytes, dtype=np.int16)
-    audio = audio.astype(np.float32) / np.iinfo(np.int16).max
-    energy = np.sqrt(np.mean(audio**2))
-    return energy > threshold
 
 # initializing transcriptor
 asr = FasterWhisperASR(input_language, "medium")  #options: tiny.en,tiny,base.en,base,small.en,small,medium.en,medium,large-v1,large-v2,large-v3,large,large-v3-turbo
@@ -71,9 +70,9 @@ if torch.cuda.is_available():
 gpt_cond_latent, speaker_embedding = tts_model.get_conditioning_latents(audio_path=["testing_voices/" + voiceFile])
 
 # declaring objects that will handle benchmarks
-transcript_bench = Benchmark("transcript")
-translate_bench = Benchmark("translate", buff_size=10)
-tts_bench = Benchmark("tts", buff_size=10)
+transcript_bench = Benchmark("transcript", totalStats=totalStats)
+translate_bench = Benchmark("translate", buff_size=10, totalStats=totalStats)
+tts_bench = Benchmark("tts", buff_size=10, totalStats=totalStats)
 
 #### Building the pipeline ####
 
@@ -95,7 +94,6 @@ def finish_transcription():
         _,_,transcription = transcription_processor.finish()
     return transcription if transcription != "" else None
     # transcription_processor.init() # must do this if the processor will be reused
-
 transcipt_pipe = TranscribePipe(audio_chunk_received, transcription_iteration, finish_transcription)
 
 #### Translation Pipe ####
@@ -108,12 +106,15 @@ def translate_iteration(input:str) -> str:
     
     print(f'{input} -> {translated_text}')
     return translated_text
-
 translate_pipe = TranslatePipe(translate_iteration)
 
 #### TTS Pipe ####
+waiting_first_clip_byte = True
+end_clip_stream_time = start_clip_stream_time = start_translation_time = time.perf_counter()
+
 def tts_iteration(input: str, send:Callable[[bytes], None]):
     global tts_bench
+    global waiting_first_clip_byte, start_translation_time
     with tts_bench:
         chunks = tts_model.inference_stream(
             input,
@@ -123,23 +124,15 @@ def tts_iteration(input: str, send:Callable[[bytes], None]):
         )
         for chunk in chunks:
             send(postprocess(chunk))
-
+            if(waiting_first_clip_byte):
+                start_translation_time = time.perf_counter()
+                waiting_first_clip_byte = False
+                
 tts_pipe = TTSPipe(tts_iteration)
 
 out_wav = bytearray()
-waiting_first_clip_byte = True
-end_clip_stream_time = start_clip_stream_time = time.perf_counter()
 def audio_out_iteration(input: bytes):
-    global waiting_first_clip_byte
-    global end_clip_stream_time
-    global start_clip_stream_time
     global out_wav
-
-    if(waiting_first_clip_byte):
-        if(detect_speech(input)):
-            print(f"detected audio latency for clip (end): {time.perf_counter() - end_clip_stream_time}")
-            print(f"detected audio latency for clip (start): {time.perf_counter() - start_clip_stream_time}")
-            waiting_first_clip_byte = False
     out_wav.extend(input)
 output_pipe = AudioOutPipe(audio_out_iteration)
 
@@ -151,19 +144,32 @@ def to_pipeline(input: bytes):
     transcipt_pipe.receive(input)
 
 def audio_clip_ended():
-    global waiting_first_clip_byte
     global end_clip_stream_time
     end_clip_stream_time = time.perf_counter()
-    waiting_first_clip_byte = True
     print('audio clip ended streaming')
 
+first_sentence = True
 def audio_clip_started(clip_name: str):
-    global start_clip_stream_time
+    global start_clip_stream_time, waiting_first_clip_byte, start_translation_time, end_clip_stream_time, first_sentence
+
+    if(first_sentence):
+        first_sentence = False
+    else:
+        print(f'time between start of the audio stream and start of the translation audio: {start_translation_time - start_clip_stream_time}')
+        print(f'time between end of the audio stream and start of the translation audio: {start_translation_time - end_clip_stream_time}')
+        totalStats["start_start"].append(start_translation_time - start_clip_stream_time)
+        totalStats["end_start"].append(start_translation_time - end_clip_stream_time)
+
     start_clip_stream_time = time.perf_counter()
+    waiting_first_clip_byte = True
     print(f'started streaming {clip_name}')
 
+def can_start_next_clip():
+    global waiting_first_clip_byte
+    return waiting_first_clip_byte == False
+
 # simulating received audio stream
-simulator = StreamSimulator("benchmark_audios/", to_pipeline, audio_clip_started, audio_clip_ended)
+simulator = StreamSimulator("benchmark_audios/", to_pipeline, audio_clip_started, audio_clip_ended, can_start_next_clip)
 simulator.start_in_thread()
     
 while not simulator.finished:
@@ -173,8 +179,11 @@ latency = time.perf_counter()
 
 transcipt_pipe.close()
 
+print(f'time between start of the audio stream and start of the translation audio: {start_translation_time - start_clip_stream_time}')
+print(f'time between end of the audio stream and start of the translation audio: {start_translation_time - end_clip_stream_time}')
+totalStats["start_start"].append(start_translation_time - start_clip_stream_time)
+totalStats["end_start"].append(start_translation_time - end_clip_stream_time)
 print(f'latency after end of stream = {time.perf_counter() - latency}')
-
 save_to_wav(out_wav)
 
 simulator.stop()
@@ -182,3 +191,7 @@ simulator.stop()
 transcript_bench.show()
 translate_bench.show()
 tts_bench.show()
+
+for name, scores in totalStats.items():
+    average = sum(scores) / len(scores)
+    print(f"{name}: {average:.2f}")

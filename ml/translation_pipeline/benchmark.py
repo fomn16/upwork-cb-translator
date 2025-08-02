@@ -2,7 +2,7 @@ import time
 from typing import Optional, Type, Any
 
 class Benchmark:
-    def __init__(self, name: str, buff_size: int = 100):
+    def __init__(self, name: str, buff_size: int = 100, totalStats = {}):
         """
         :param name: Name of the benchmark (used in printed output)
         """
@@ -11,6 +11,10 @@ class Benchmark:
         self.min_time = float('inf')  # Global minimum time
         self.max_time = float('-inf')  # Global maximum time
         self.buff_size = buff_size
+        self.totalStats = totalStats
+        self.totalStats[self.name + "_avrg"] = []
+        self.totalStats[self.name + "_min"] = []
+        self.totalStats[self.name + "_max"] = []
 
     def __enter__(self):
         """
@@ -44,10 +48,16 @@ class Benchmark:
         return False  # Don't suppress exceptions
     
     def show(self):
-        avg_time = sum(self.times) / len(self.times)
-        print(
-            f"[{self.name}] Last {self.buff_size} blocks stats: "
-            f"Average time: {avg_time:.6f} seconds | "
-            f"Min time: {self.min_time:.6f} seconds | "
-            f"Max time: {self.max_time:.6f} seconds"
-        )
+        if(sum(self.times) != 0):
+            avg_time = sum(self.times) / len(self.times)
+
+            self.totalStats[self.name + "_avrg"].append(avg_time)
+            self.totalStats[self.name + "_min"].append(self.min_time)
+            self.totalStats[self.name + "_max"].append(self.max_time)
+
+            print(
+                f"[{self.name}] Last {self.buff_size} blocks stats: "
+                f"Average time: {avg_time:.6f} seconds | "
+                f"Min time: {self.min_time:.6f} seconds | "
+                f"Max time: {self.max_time:.6f} seconds"
+            )
