@@ -451,9 +451,10 @@ def pump_audio(
             while len(buf) >= segment_size:
                 chunk_count += 1
                 seg, buf = buf[:segment_size], buf[segment_size:]
+
                 # temporarily skipping audio pipeline to debug the video
                 output_queue.enqueue(seg)
-                ##############################################################
+                #focusing on the video part for now
                 '''if seamless_streaming == 1:
                     process_translation_chunk(
                         seg,
@@ -479,8 +480,6 @@ def pump_audio(
                             else ", no video frames found."
                         )
                     )
-                    
-                    
                     output_queue.enqueue(seg)'''
 
     finally:
@@ -493,7 +492,6 @@ def pump_audio(
             os.remove(sdp_path)
         except OSError:
             pass
-
 
 # Function that writes translated audio from the output queue to the output pipe at correct throughput
 def write_to_output(output_queue: OutputAudioQueue, ff_out: Popen):
@@ -521,10 +519,8 @@ def write_to_output(output_queue: OutputAudioQueue, ff_out: Popen):
     finally:
         output_queue.closed = True
 
-
 # ----------------- FastAPI Server ----------------- #
 app = FastAPI()
-
 
 class TranslationRequest(BaseModel):
     payloadType: int
@@ -536,9 +532,6 @@ class TranslationRequest(BaseModel):
     ssrc: int
     targetLang: str
     sessionId: str
-
-
-
 
 @app.post("/translation/initiate")
 async def initiate_translation(data: TranslationRequest):

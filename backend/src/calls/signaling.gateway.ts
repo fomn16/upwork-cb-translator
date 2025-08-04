@@ -313,7 +313,6 @@ export class SignalingGateway implements OnGatewayInit {
         await consumer.resume();
     }
 
-
     closeTransports(socketId: string) {
         const sendTransport = userTransports.get(`${socketId}-send`);
         const recvTransport = userTransports.get(`${socketId}-recv`);
@@ -354,48 +353,47 @@ export class SignalingGateway implements OnGatewayInit {
     }
 
     closeTranslationTransports(socketId: string) {
-        const sendTransport = translationTransports.get(`${socketId}-send`);
-        const recvTransport = translationTransports.get(`${socketId}-recv`);
-        const videoTransport = translationTransports.get(`${socketId}-video`);
+        const transportsToClose = [
+            `${socketId}-audio-send`,
+            `${socketId}-audio-recv`,
+            `${socketId}-video-send`,
+            `${socketId}-video-recv`
+        ]
 
-        if (sendTransport) {
-            sendTransport.close();
-            translationTransports.delete(`${socketId}-send`);
-        }
-        if (recvTransport) {
-            recvTransport.close();
-            translationTransports.delete(`${socketId}-recv`);
-        }
-        if (videoTransport) {
-            videoTransport.close();
-            translationTransports.delete(`${socketId}-video`);
-        }
+        transportsToClose.forEach(transportName => {
+            const transport = translationTransports.get(transportName)
+            if (transport) {
+                transport.close();
+                translationTransports.delete(transportName);
+            }
+        });
     }
 
     closeTranslationProducers(socketId: string) {
-        const audioProducer = translationProducers.get(socketId + '-audio');
-        if (audioProducer) {
-            audioProducer.close();
-            translationProducers.delete(socketId + '-audio');
-        }
-        const videoProducer = translationProducers.get(socketId + '-video');
-        if (videoProducer) {
-            videoProducer.close();
-            translationProducers.delete(socketId + '-video');
-        }
+        const producersToClose = [
+            `${socketId}-audio`,
+            `${socketId}-video`
+        ]
+        producersToClose.forEach(producerName => {
+            const producer = translationProducers.get(producerName);
+            if (producer) {
+                producer.close();
+                translationProducers.delete(producerName);
+            }
+        });
     }
 
     closeTranslationConsumers(socketId: string) {
-        const audioConsumer = translationConsumers.get(socketId + '-audio');
-        if (audioConsumer) {
-            audioConsumer.close();
-            translationConsumers.delete(socketId + '-audio');
-        }
-        const videoConsumer = translationConsumers.get(socketId + '-video');
-        if (videoConsumer) {
-            videoConsumer.close();
-            translationConsumers.delete(socketId + '-video');
-        }
+        const consumersToClose = [
+            `${socketId}-audio`,
+            `${socketId}-video`
+        ]
+        consumersToClose.forEach(consumerName => {
+            const consumer = translationConsumers.get(consumerName);
+            if (consumer) {
+                consumer.close();
+                translationConsumers.delete(consumerName);
+            }
+        });
     }
-
 }
