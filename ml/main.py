@@ -661,9 +661,6 @@ def run_ffmpeg_video_pipe(sdp_path, width=640, height=480, fps=15):
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 
-
-
-
 def store_frames(
     proc: Popen,
     frame_width: int,
@@ -738,7 +735,7 @@ async def initiate_video_capture(data: VideoCaptureRequest):
     ).start()
 
     # disabled for now, while still sending the test pattern instead of actual video
-    '''threading.Thread(
+    threading.Thread(
         target=store_frames,
         args=(
             ffmpeg_proc,
@@ -748,7 +745,7 @@ async def initiate_video_capture(data: VideoCaptureRequest):
             video_frames_storage,
         ),
         daemon=True,
-    ).start()'''
+    ).start()
 
     threading.Thread(
         target=send_frames_to_mediasoup,
