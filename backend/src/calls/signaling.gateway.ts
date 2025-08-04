@@ -46,7 +46,7 @@ class BidirectionalConnectionSettings{
 function getSettingsForKind(kind:'audio'|'video', codecs:RtpCodecParameters[]){
     let settings = new BidirectionalConnectionSettings()
     settings.enableVoiceClone = false
-    settings.processingServerUrl = 'http://0.0.0.0:2002/'
+    settings.processingServerUrl = 'http://127.0.0.1:2002/'
 
     if(kind == 'audio'){
         settings.processingServerInitiateMethod = 'translation/initiate'
@@ -66,9 +66,16 @@ function getSettingsForKind(kind:'audio'|'video', codecs:RtpCodecParameters[]){
         settings.successMessage = '✅ Video capture pipeline initiated:'
         settings.errorMessage = '❌ Error initiating video capture pipeline:'
         settings.RTPCodecParameter = [{
-            mimeType:'video/VP8',
-            payloadType:101,
-            clockRate: 90000
+            mimeType: "video/VP8",
+            payloadType: 101,
+            clockRate: 90000,
+            rtcpFeedback: [
+            { type: "nack" },
+            { type: "nack", parameter: "pli" },
+            { type: "ccm", parameter: "fir" },
+            { type: "goog-remb" },
+            ],
+            parameters: {},
         }]
     }
     return settings;
@@ -112,8 +119,8 @@ export class SignalingGateway implements OnGatewayInit {
     
     async setupBidirectionalConnection(socket:Socket, producer:Producer<AppData>, kind:"audio"|"video", targetLang:string): Promise<Producer<AppData> | null>{
         let processedProducer: Producer<AppData> | null = null;
-        const sendTransport = await this.mediasoupService.createPlainTransport("send");
-        const recvTransport = await this.mediasoupService.createPlainTransport("recv");
+        const sendTransport = await this.mediasoupService.createPlainTransport("send", kind);
+        const recvTransport = await this.mediasoupService.createPlainTransport("recv", kind);
         const sessionId = `${socket.id}@${targetLang}`
 
         const rtpPort = getPort();
@@ -121,7 +128,7 @@ export class SignalingGateway implements OnGatewayInit {
         // [Mediasoup -> Track Processor]
         translationTransports.set(`${socket.id}-${kind}-send`, sendTransport);
         await sendTransport.connect({
-            ip: '0.0.0.0',
+            ip: '127.0.0.1',
             port: rtpPort,
         });
 
@@ -134,8 +141,9 @@ export class SignalingGateway implements OnGatewayInit {
         // [Track Processor -> Mediasoup]
         translationTransports.set(`${socket.id}-${kind}-recv`, recvTransport);
         await recvTransport.connect({
-            ip: '0.0.0.0',                    // Processing program sends the track to this IP
-            port: recvTransport.tuple.localPort,// Processing program sends the track to this port
+            ip: '0.0.0.0',                              // Processing program sends the track to this IP
+            port: recvTransport.tuple.localPort,        // Processing program sends the track to this port
+            rtcpPort: recvTransport.tuple.localPort + 1,// for now, is always sent but its ignored for audio
         });
 
         const codec = consumer.rtpParameters.codecs[0];
@@ -181,29 +189,10 @@ export class SignalingGateway implements OnGatewayInit {
             kind: kind,
             rtpParameters: {
                 codecs: connectionSettings.RTPCodecParameter,
-                encodings: [{ssrc}]
+                encodings: [{ssrc}],
             },
         });
         translationProducers.set(`${socket.id}-${kind}`, processedProducer);
-
-        // This is only for debugging the blank/dropping video problem
-        if (kind === "video") {
-            console.log("📹 Video Producer Details:");
-            console.log(`  - Producer ID: ${processedProducer.id}`);
-            console.log(`  - Kind: ${processedProducer.kind}`);
-            console.log(`  - Paused: ${processedProducer.paused}`);
-            console.log(`  - Closed: ${processedProducer.closed}`);
-            console.log("  - RTP Parameters:");
-            console.log(JSON.stringify(processedProducer.rtpParameters, null, 2));
-            console.log("  - Associated Transports:");
-            console.log(`    - Send Transport ID: ${sendTransport.id}`);
-            console.log(`    - Receive Transport ID: ${recvTransport.id}`);
-            console.log("  - Session Details:");
-            console.log(`    - Session ID: ${sessionId}`);
-            console.log(`    - Target Language: ${targetLang}`);
-            console.log(`    - RTP Port: ${rtpPort}`);
-            console.log(`    - Local Port: ${recvTransport.tuple.localPort}`);
-        }
 
         return processedProducer;
     }
@@ -249,16 +238,6 @@ export class SignalingGateway implements OnGatewayInit {
                 if(processedProducer != null){
                     const producerKey = `${socket.id}-${kind}`;
 
-                    // Logging producer stats for debugging
-                    setInterval(async () => {
-                        try {
-                            const stats = await processedProducer.getStats();
-                            console.log(`📊 ${producerKey} transport stats:`, stats);
-                        } catch (err) {
-                            console.log('Stats error:', err);
-                        }
-                    }, 5000);
-
                     rooms.get(roomCode)!.producers.set(producerKey, processedProducer);
 
                     socket.to(roomCode).emit('new-producer', {
@@ -266,35 +245,6 @@ export class SignalingGateway implements OnGatewayInit {
                         socketId: socket.id,
                         kind,
                     });
-
-                    // TODO: something is wrong with the processedProducer for video (wigh drop rate 
-                    // when a consumer tries to consume from it, while the original producer workds fine).
-                    // try to diff them for debugging
-
-                    if(kind == 'video'){
-                        setInterval(async () => {
-                            console.log('---------------------------------------------------------')
-                            console.log('Original Producer:', {
-                                id: producer.id,
-                                kind: producer.kind,
-                                rtpParameters: producer.rtpParameters,
-                                appData: producer.appData,
-                                paused: producer.paused,
-                                score: producer.score,
-                                stats: await producer.getStats(),
-                            });
-
-                            console.log('Processed Producer:', {
-                                id: processedProducer.id,
-                                kind: processedProducer.kind,
-                                rtpParameters: processedProducer.rtpParameters,
-                                appData: processedProducer.appData,
-                                paused: processedProducer.paused,
-                                score: processedProducer.score,
-                                stats: await processedProducer.getStats(),
-                            });
-                        }, 5000);
-                    }
 
                 }
                 else{
@@ -359,19 +309,6 @@ export class SignalingGateway implements OnGatewayInit {
             rtpParameters: consumer.rtpParameters,
             producerId,
         });
-
-        // Logs the stats for debugging the video problem. You can see almost all the frames sent by
-        // the python server are dropped, even though the stats from the producer itself seem ok
-        setInterval(async () => {
-            try {
-                const stats = await consumer.getStats();
-                console.log(`📊 ${consumer.id} consumer stats:`, stats);
-                const Transportstats = await transport.getStats();
-                console.log(`📊 ${transport.id} consumer transport stats:`, Transportstats);
-            } catch (err) {
-                console.log('Stats error:', err);
-            }
-        }, 5000);
 
         await consumer.resume();
     }

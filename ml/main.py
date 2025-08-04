@@ -45,7 +45,7 @@ else:
 if IS_PROD:
     MEDIASERVER_IP = "10.10.0.82"
 else:
-    MEDIASERVER_IP = "0.0.0.0"
+    MEDIASERVER_IP = "127.0.0.1"
 
 
 frames_arrived = False
@@ -306,14 +306,14 @@ def save_to_wav(audio_bytes: bytes, sample_rate=48000, num_channels=2, sample_wi
 # Initializes the file used to read input from the network
 def write_sdp_file(payload_type, codec_name, clock_rate, channels, rtp_port):
     sdp_content = f"""v=0
-o=- 0 0 IN IP4 0.0.0.0
-s=Mediasoup Audio
-c=IN IP4 0.0.0.0
-t=0 0
-m=audio {rtp_port} RTP/AVP {payload_type}
-a=rtpmap:{payload_type} {codec_name}/{clock_rate}/{channels}
-a=recvonly
-""".strip()
+    o=- 0 0 IN IP4 0.0.0.0
+    s=Mediasoup Audio
+    c=IN IP4 0.0.0.0
+    t=0 0
+    m=audio {rtp_port} RTP/AVP {payload_type}
+    a=rtpmap:{payload_type} {codec_name}/{clock_rate}/{channels}
+    a=recvonly
+    """.strip()
 
     tmp_dir = tempfile.gettempdir()
     sdp_path = os.path.join(tmp_dir, f"audio_{int(os.getpid())}.sdp")
@@ -737,8 +737,8 @@ async def initiate_video_capture(data: VideoCaptureRequest):
         target=print_ffmpeg_logs, args=(ffmpeg_proc, "FFmpeg-VIDEO"), daemon=True
     ).start()
 
-    
-    threading.Thread(
+    # disabled for now, while still sending the test pattern instead of actual video
+    '''threading.Thread(
         target=store_frames,
         args=(
             ffmpeg_proc,
@@ -748,7 +748,7 @@ async def initiate_video_capture(data: VideoCaptureRequest):
             video_frames_storage,
         ),
         daemon=True,
-    ).start()
+    ).start()'''
 
     threading.Thread(
         target=send_frames_to_mediasoup,
@@ -768,5 +768,5 @@ async def initiate_video_capture(data: VideoCaptureRequest):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=2002, reload=False)
+    uvicorn.run("main:app", host="127.0.0.1", port=2002, reload=False)
 # %%

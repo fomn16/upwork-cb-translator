@@ -5,49 +5,52 @@ import tempfile
 import time
 
 video_frames_storage = {}
-def send_frames_to_mediasoup(frame_generator, target_ip, target_port, payload_type: int, ssrc: int, width=640, height=480, fps=15):
+def send_frames_to_mediasoup(
+    frame_generator,
+    target_ip,
+    target_port,
+    payload_type: int,
+    ssrc: int,
+    width=640,
+    height=480,
+    fps=30,
+    bitrate=2500, #bitrate/1000
+):
     cmd = [
         "ffmpeg",
-        "-f",
-        "rawvideo",  # Input format: raw video
-        "-pix_fmt",
-        "yuv420p",  # Pixel format for VP8
-        "-s",
-        f"{width}x{height}",  # Resolution (adjust as needed)
-        "-r",
-        f"{fps}",  # Frame rate (adjust as needed)
+        "-re",
+        "-f", "lavfi",
         "-i",
-        "pipe:0",  # Input from stdin
-        "-c:v",
-        "libvpx",  # VP8 codec
-        "-b:v",
-        "1M",  # Bitrate (adjust as needed)
-        "-payload_type",
-        str(payload_type),
-        "-ssrc",
-        str(ssrc),
-        "-f",
-        "rtp",
-        f"rtp://{target_ip}:{target_port}",
+        f"testsrc=size=1280x720:rate={fps}", #send test pattern
+        "-c:v", "libvpx",# send with VP8 encoding
+        "-pix_fmt", "yuv420p",#send with yuv420p
+        "-b:v", str(bitrate)+"k",# bitrate for send
+        "-maxrate", str(bitrate)+"k", # max rate for send
+        "-bufsize", str(2*bitrate)+"k",
+        "-g", str(fps*2),  # keyframe every 2s at 30fps
+        "-threads", "4",
+        "-f", "rtp", #output as RTP
+        "-payload_type", str(payload_type),
+        "-ssrc", str(ssrc),
+        f"rtp://{target_ip}:{target_port}?localrtcpport=0&rtcpport={target_port+1}&pkt_size=1200",
     ]
-    proc =  subprocess.Popen(
+    proc = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
     )
-    frame_interval = 1.0 / fps
+
     try:
         for frame in frame_generator:
-            flat_frame = frame.tobytes()  # Convert 3D array to flat byte array
-            proc.stdin.write(flat_frame)  # Write the flat frame to FFmpeg's stdin
+            # frame must be HxWx3, dtype=uint8, BGR order
+            proc.stdin.write(frame.tobytes())
             proc.stdin.flush()
-            time.sleep(frame_interval)  # basic timing to avoid too much jitter on mediasoup
     except BrokenPipeError:
-        print("⚠️ FFmpeg pipe closed, stopping sending.")
-    except Exception as e:
-        print(f"⚠️ Unexpected error: {e}")
+        print("⚠️ FFmpeg video pipe closed, stopping.")
     finally:
-        proc.stdin.close()
-        proc.wait()
-        print("✅ FFmpeg process terminated.")
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        proc.wait(timeout=5)
 
 
 

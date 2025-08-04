@@ -58,7 +58,7 @@ speaker_id = "Vijay_ENG"
 
 # Voice clone server loop
 def voice_clone_server():
-    address = ('0.0.0.0', 6008)
+    address = ('127.0.0.1', 6008)
     listener = Listener(address, authkey=b'secret_vc')
     print("[VC Worker] Voice clone server is listening...")
 

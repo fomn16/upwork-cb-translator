@@ -13,6 +13,7 @@ export class MediasoupService {
     async initMediasoup() {
         this.worker = await mediasoup.createWorker({
             logLevel: 'debug',
+            logTags: ["rtp", "rtcp", "srtp"],
             rtcMinPort: 20000,
             rtcMaxPort: 49999,
         });
@@ -26,9 +27,15 @@ export class MediasoupService {
                     channels: 2,
                 },
                 {
-                    kind: 'video',
-                    mimeType: 'video/VP8',
+                    kind: "video",
+                    mimeType: "video/VP8",
                     clockRate: 90000,
+                    rtcpFeedback: [
+                        { type: "nack" },
+                        { type: "nack", parameter: "pli" },
+                        { type: "ccm", parameter: "fir" },
+                        { type: "goog-remb" },
+                    ],
                 },
             ],
         });
@@ -72,11 +79,11 @@ export class MediasoupService {
     }
 
 
-    async createPlainTransport(type: 'send' | 'recv') {
+    async createPlainTransport(type: 'send' | 'recv', kind: 'audio' | 'video') {
         const plainTransport = await this.router.createPlainTransport({
             listenIp: { ip: '0.0.0.0', announcedIp: msConfig.announcedIp }, // for external access
-            rtcpMux: true,
-            comedia: type === 'send' ? false : true,  // allow remote to connect first
+            rtcpMux: !(kind === 'video' && type == 'recv'), // only disable mux for receiving video from the other server
+            comedia: type === 'recv',  // allow remote to connect first when receiving
         });
 
         return plainTransport;
