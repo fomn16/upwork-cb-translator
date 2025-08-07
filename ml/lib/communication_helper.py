@@ -44,6 +44,7 @@ class CommunicationHelper:
         send_port: int,
         recv_callback: Callable[[str, bytes], None],
         run_in_another_thread: bool = True,
+        com_method: str = "ipc",
         host: str = "127.0.0.1",
         encoding: str = "utf-8",
         errors: str = "strict",
@@ -69,8 +70,12 @@ class CommunicationHelper:
         self._encoding = encoding
         self._errors = errors
 
-        send_addr = f"tcp://{host}:{send_port}"
-        recv_addr = f"tcp://{host}:{recv_port}"
+        if(com_method == "tcp"):
+            send_addr = f"tcp://{host}:{send_port}"
+            recv_addr = f"tcp://{host}:{recv_port}"
+        else:
+            send_addr = f"ipc:///tmp/com_zmq_{send_port}.ipc"
+            recv_addr = f"ipc:///tmp/com_zmq_{recv_port}.ipc"
 
         self._recv_sock.bind(recv_addr)
         self._send_sock.connect(send_addr)
