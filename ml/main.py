@@ -1,40 +1,25 @@
-import socketio
-import asyncio
 import os
 import tempfile
 import subprocess
 from subprocess import Popen
 import threading
 import time
-from pydub import AudioSegment
-from pydub.playback import play
 import time
 import numpy as np
 from scipy import signal
-import torch
-import torchaudio
-from lib.send_video_frames import send_frames_to_mediasoup, frame_generator, video_frames_storage
 from fastapi import FastAPI
 from pydantic import BaseModel
 import wave
 import uvicorn
 import uuid
 
-# import noisereduce as nr
-
-
-#####################################################
-import av
 import numpy as np
 
-# import cv2
-from io import BytesIO
+from config.video_config import *
+from config.translation_config import *
+from config.connection_config import *
 
-
-##########################################
-
-ENABLE_TRANSLATION = True
-IS_PROD = False
+from lipsync_communication import *
 
 seamlessm4t = 0
 if ENABLE_TRANSLATION:
@@ -42,20 +27,10 @@ if ENABLE_TRANSLATION:
 else:
     seamless_streaming = 0
 
-if IS_PROD:
-    MEDIASERVER_IP = "10.10.0.82"
-else:
-    MEDIASERVER_IP = "127.0.0.1"
-
-
-frames_arrived = False
-
-
-# from streaming_translator_utils import SAMPLE_RATE, StatelessBytesTranslator
+# from lib.streaming_translator_utils import SAMPLE_RATE, StatelessBytesTranslator
 # translator1 = StatelessBytesTranslator(tgt_lang="hin")  # Hindi output
 # start the voice clone
 from multiprocessing.connection import Client
-
 
 def request_voice_clone(audio):
     address = ("localhost", 6000)
@@ -65,25 +40,20 @@ def request_voice_clone(audio):
     conn.close()
     return result
 
-
 if seamless_streaming == 1:  # %%
 
-    from seamless_streaming_utils import (
+    from lib.seamless.seamless_streaming_utils import (
         OutputSegments,
         reset_states,
         get_audio_bytes,
-        play_audio,
-        play_audio1,
-        get_audiosegment,
         build_streaming_system,
         bytes_to_float32_mono_array,
-        stream_translate_from_bytes,
     )
 
     from seamless_communication.streaming.agents.seamless_streaming_s2st import (
         SeamlessStreamingS2STJointVADAgent,
     )
-    from simuleval.data.segments import SpeechSegment, EmptySegment, TextSegment
+    from simuleval.data.segments import SpeechSegment, TextSegment
 
     agent_class = SeamlessStreamingS2STJointVADAgent
     tgt_lang = "hin"
@@ -106,9 +76,6 @@ if seamless_streaming == 1:  # %%
 
     system = build_streaming_system(model_configs, agent_class)
     print("✅ System ready.")
-    # system_states = system.build_states()
-
-    # stream_translate(system, tgt_lang)
 
 
 import pickle
@@ -153,8 +120,6 @@ def timed_is_voiced(float_audio, sample_rate=16000):
     result = is_voiced_float32(float_audio, sample_rate)
     elapsed_ms = (time.perf_counter() - start_time) * 1000  # milliseconds
     return result, elapsed_ms
-
-
 
 def process_translation_chunk(
     audio_chunk: bytes,
@@ -249,48 +214,7 @@ def process_translation_chunk(
         print("🔇 No speech detected. Skipping...")
         reset_states(system, system_states)
 
-
-
-# %%
-
-SAMPLE_READ_SIZE = 4096  # minimum number of bytes read from the audio buffers/arrays
-OUTPUT_PERIOD = 0.02  # defines frequency at which output is written to the network
-
-
-# ----------------- OutputAudioQueue ----------------- #
-# class responsible for handling the queue used to output audio with thread safety
-class OutputAudioQueue:
-    def __init__(self):
-        self.data = bytearray()  # Array that stores the audio queue
-        self.lock = threading.Lock()  # Lock used to control access between threads
-        self.closed = False  # Indicates when the process must be stopped
-        self.timeout_seconds = 10 * 60  # Stops the threads after 10 min of inactivity
-        self.last_write = time.perf_counter()  # Saves last enqueue time
-
-    # Appends new data to the queue
-    def enqueue(self, new_data: bytes):
-        with self.lock:
-            self.data.extend(new_data)
-            self.last_write = time.perf_counter()
-
-    # Reads and removes the specified number of bytes from the queue
-    def dequeue(self, size):
-        with self.lock:
-            if time.perf_counter() - self.last_write > self.timeout_seconds:
-                self.closed = True
-            if len(self.data) == 0:
-                # print("returning empty bytes to client")
-                return b""
-            if size > len(self.data):
-                size = len(self.data)
-            dequeued_data = self.data[:size]
-            self.data = self.data[size:]
-            return dequeued_data
-
-
 # ----------------- Utilities ----------------- #
-
-
 # Saves the bytes to a wav file on disk for debugging
 def save_to_wav(audio_bytes: bytes, sample_rate=48000, num_channels=2, sample_width=2):
     os.makedirs("recordings", exist_ok=True)
@@ -427,7 +351,6 @@ def tensor_to_bytes(translated_wav):
 def pump_audio(
     ff_in: Popen,
     ff_out: Popen,
-    output_queue: OutputAudioQueue,
     segment_size: int,
     sample_rate: int,
     sdp_path: str,
@@ -436,25 +359,19 @@ def pump_audio(
     target_lang,
     session_id: str,
 ):
+    global lipsync_audio_socket
     buf = b""
-    chunk_count = 0
     try:
         while True:
             chunk = ff_in.stdout.read(SAMPLE_READ_SIZE)
             if not chunk:
                 print("empty chunk, stopping")
                 break
-            if output_queue.closed:
-                print("output closed, stopping")
-                break
             buf += chunk
             while len(buf) >= segment_size:
-                chunk_count += 1
                 seg, buf = buf[:segment_size], buf[segment_size:]
-
-                # temporarily skipping audio pipeline to debug the video
-                output_queue.enqueue(seg)
-                #focusing on the video part for now
+                lipsync_audio_socket.send(session_id, seg)
+                #focusing on setting up the lipsync pipeline
                 '''if seamless_streaming == 1:
                     process_translation_chunk(
                         seg,
@@ -481,9 +398,7 @@ def pump_audio(
                         )
                     )
                     output_queue.enqueue(seg)'''
-
     finally:
-        output_queue.closed = True
         ff_in.stdout.close()
         ff_out.stdin.close()
         ff_in.wait()
@@ -492,32 +407,6 @@ def pump_audio(
             os.remove(sdp_path)
         except OSError:
             pass
-
-# Function that writes translated audio from the output queue to the output pipe at correct throughput
-def write_to_output(output_queue: OutputAudioQueue, ff_out: Popen):
-    next_time = time.perf_counter()
-    try:
-        while not output_queue.closed:
-            seg = output_queue.dequeue(SAMPLE_READ_SIZE)
-            if seg:
-                try:
-                    # print("=======================", seg)
-                    ff_out.stdin.write(seg)
-                    ff_out.stdin.flush()
-                except BrokenPipeError:
-                    # stop the voice clone
-                    print("⚠️ FFmpeg-OUT pipe closed")
-                    return
-            next_time += OUTPUT_PERIOD
-            sleep_time = next_time - time.perf_counter()
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            else:
-                next_time = time.perf_counter()
-    except Exception as e:
-        print(f"Error in processing thread: {e}")
-    finally:
-        output_queue.closed = True
 
 # ----------------- FastAPI Server ----------------- #
 app = FastAPI()
@@ -535,18 +424,16 @@ class TranslationRequest(BaseModel):
 
 @app.post("/translation/initiate")
 async def initiate_translation(data: TranslationRequest):
-    global system
+    global system, audio_out_pipes
     print("📥 Received translation initiation:", data.dict())
     sample_rate = data.clockRate
 
     if ENABLE_TRANSLATION:
         system_states = system.build_states()
     else:
-        print("========================")
         system_states = None
         system = None
 
-    print(system)
     # Sets up the read file from the rtp port provided by the client
     sdp_path = write_sdp_file(
         payload_type=data.payloadType,
@@ -557,9 +444,8 @@ async def initiate_translation(data: TranslationRequest):
     )
 
     ff_in = run_ffmpeg_input(sdp_path)
-    ff_out = run_ffmpeg_output(
-        MEDIASERVER_IP, data.outputPort, data.payloadType, data.ssrc
-    )
+    ff_out = run_ffmpeg_output(MEDIASERVER_IP, data.outputPort, data.payloadType, data.ssrc)
+    audio_out_pipes[data.sessionId] = ff_out
 
     # Create threads that log errors encountered by FFmpeg
     threading.Thread(
@@ -574,8 +460,6 @@ async def initiate_translation(data: TranslationRequest):
     else:
         segment_size = int(sample_rate * 2 * 2 * 2)
 
-    # Initializes output audio queue
-    output_queue = OutputAudioQueue()
     # target_lang = data.targetLang
     target_lang = "eng"
     # manually enter the language code here
@@ -585,7 +469,6 @@ async def initiate_translation(data: TranslationRequest):
         args=(
             ff_in,
             ff_out,
-            output_queue,
             segment_size,
             sample_rate,
             sdp_path,
@@ -595,11 +478,6 @@ async def initiate_translation(data: TranslationRequest):
             data.sessionId,
         ),
         daemon=True,
-    ).start()
-
-    # Create thread to output audio
-    threading.Thread(
-        target=write_to_output, args=(output_queue, ff_out), daemon=True
     ).start()
 
     return {"status": "Translation pipeline started"}
@@ -650,51 +528,99 @@ def run_ffmpeg_video_pipe(sdp_path, width=640, height=480, fps=15):
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8
     )
 
+def run_ffmpeg_video_output(
+    target_ip,
+    target_port,
+    payload_type: int,
+    ssrc: int,
+    width=640,
+    height=480,
+    fps=15,
+    bitrate=2500,  # kbps
+):
+    # FFmpeg command: read raw BGR frames from stdin, encode VP8, send RTP/RTCP
+    cmd = [
+        "ffmpeg",
+        "-re",
+        # Raw video from STDIN
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "bgr24",  # input frame format (BGR uint8)
+        "-s:v",
+        f"{width}x{height}",
+        "-r",
+        str(fps),
+        "-i",
+        "pipe:0",
+        # Encode as VP8
+        "-c:v",
+        "libvpx",
+        # Convert to yuv420p for VP8 encoder compatibility
+        "-pix_fmt",
+        "yuv420p",
+        # Rate control
+        "-b:v",
+        f"{bitrate}k",
+        "-maxrate",
+        f"{bitrate}k",
+        "-bufsize",
+        f"{2*bitrate}k",
+        "-g",
+        str(fps * 2), # send keyframe every 2 seconds
+        "-threads",
+        "4",
+        # Output as RTP (video only)
+        "-f",
+        "rtp",
+        "-payload_type",
+        str(payload_type),
+        "-ssrc",
+        str(ssrc),
+        f"rtp://{target_ip}:{target_port}"
+        f"?localrtcpport=0&rtcpport={target_port+1}&pkt_size=1200",
+    ]
 
-FRAME_WIDTH = 640
-FRAME_HEIGHT = 480
+    return subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        bufsize=10**7,
+    )
 
-def store_frames(
-    proc: Popen,
+def foward_frames_for_processing(
+    in_proc: Popen,
+    out_proc: Popen,
     frame_width: int,
     frame_height: int,
-    session_id: str = None,
-    video_frames_storage=video_frames_storage,
+    session_id: str
 ):
+    global lipsync_video_socket
     frame_size = frame_width * frame_height * 3  # BGR24
-    count = 0
     try:
         while True:
-            count += 1
-            raw_frame = proc.stdout.read(frame_size)
+            raw_frame = in_proc.stdout.read(frame_size)
             if not raw_frame:
                 print("📤 FFmpeg pipe ended")
                 break
-            frame = np.frombuffer(raw_frame, np.uint8).reshape(
-                (frame_height, frame_width, 3)
-            )
-
-            video_frames_storage.setdefault(session_id, []).append(frame)
-
-
+            lipsync_video_socket.send(session_id, raw_frame)
     except Exception as e:
-        print(f"⚠️ Error in store_frames: {e}")
+        print(f"⚠️ Error in foward_frames_for_processing: {e}")
     finally:
         try:
-            proc.stdout.close()
-            proc.stderr.close()
-            proc.terminate()
-            proc.wait(timeout=5)
+            in_proc.stdout.close()
+            in_proc.stderr.close()
+            in_proc.terminate()
+            in_proc.wait(timeout=5)
+
+            out_proc.stdout.close()
+            out_proc.stderr.close()
+            out_proc.terminate()
+            out_proc.wait(timeout=5)
         except:
             pass
-        print("✅ Frame storage stopped")
-
-def store_frames_as_bytes(proc: Popen):
-    """
-    This function is a placeholder for storing frames as bytes.
-    It can be implemented to convert frames to bytes and store them in a suitable format.
-    """
-    pass
+        print("✅ Frame fowarder stopped")
 
 class VideoCaptureRequest(BaseModel):
     payloadType: int
@@ -705,9 +631,9 @@ class VideoCaptureRequest(BaseModel):
     sessionId: str
     ssrc: int
 
-
 @app.post("/video/initiate")
 async def initiate_video_capture(data: VideoCaptureRequest):
+    global video_out_pipes
     print("📥 Received video capture initiation:", data.dict())
 
     sdp_path = write_video_sdp_file(
@@ -717,39 +643,34 @@ async def initiate_video_capture(data: VideoCaptureRequest):
         rtp_port=data.rtpPort,
     )
 
-    ffmpeg_proc = run_ffmpeg_video_pipe(
+    ffmpeg_in = run_ffmpeg_video_pipe(
         sdp_path, width=FRAME_WIDTH, height=FRAME_HEIGHT
     )
-    
-    print(f"🔄️ FFmpeg process started with PID {ffmpeg_proc.pid}")
+
+    print(f"🔄️ FFmpeg process started with PID {ffmpeg_in.pid}")
 
     threading.Thread(
-        target=print_ffmpeg_logs, args=(ffmpeg_proc, "FFmpeg-VIDEO"), daemon=True
+        target=print_ffmpeg_logs, args=(ffmpeg_in, "FFmpeg-VIDEO"), daemon=True
     ).start()
 
-    # disabled for now, while still sending the test pattern instead of actual video
+    ffmpeg_out = run_ffmpeg_video_output(
+        MEDIASERVER_IP,  # Mediasoup plain transport IP
+        data.outputPort,  # Mediasoup plain transport video port
+        data.payloadType,
+        data.ssrc,
+        FRAME_WIDTH,
+        FRAME_HEIGHT
+    )
+    video_out_pipes[data.sessionId] = ffmpeg_out
+
     threading.Thread(
-        target=store_frames,
+        target=foward_frames_for_processing,
         args=(
-            ffmpeg_proc,
+            ffmpeg_in,
+            ffmpeg_out,
             FRAME_WIDTH,
             FRAME_HEIGHT,
-            data.sessionId,
-            video_frames_storage,
-        ),
-        daemon=True,
-    ).start()
-
-    threading.Thread(
-        target=send_frames_to_mediasoup,
-        args=(
-            frame_generator(data.sessionId),
-            MEDIASERVER_IP,  # Mediasoup plain transport IP
-            data.outputPort,  # Mediasoup plain transport video port
-            data.payloadType,
-            data.ssrc,
-            FRAME_WIDTH,
-            FRAME_HEIGHT
+            data.sessionId
         ),
         daemon=True,
     ).start()
@@ -758,5 +679,5 @@ async def initiate_video_capture(data: VideoCaptureRequest):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=2002, reload=False)
+    uvicorn.run("main:app", host="127.0.0.1", port=MAIN_ENDPOINT_PORT, reload=False)
 # %%

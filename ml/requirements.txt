@@ -3,3 +3,4 @@ aiohttp_cors
 pydub
 torch
 gi
+zmq

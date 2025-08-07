@@ -1,0 +1,8 @@
+torch
+numpy
+tqdm
+librosa
+ultralytics
+ffmpeg
+torchaudio
+zmq

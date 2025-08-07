@@ -3,44 +3,50 @@ from typing import Callable
 
 import zmq
 
+
 class CommunicationHelper:
     """
     A minimal ZeroMQ helper class.
 
     - On init: provide send_port, recv_port, and a recv_callback.
-    - send(conn_id: int, payload: bytes) to send messages.
-    - Receives messages as (int connection id, bytes) and invokes callback.
+    - send(conn_id: str, payload: bytes) to send messages.
+    - Receives messages as (str connection id, bytes) and invokes callback.
 
     Notes:
       - Uses PUSH (sender) / PULL (receiver) pattern.
       - Uses a background thread for receiving.
       - Messages are sent/received as two frames:
-          [frame 0: 8-byte big-endian int][frame 1: raw bytes]
+          [frame 0: UTF-8 string bytes][frame 1: raw bytes]
 
     example:
-    
+
         from communication_helper import CommunicationHelper
         import time
         import pickle
 
-        def received_data_callback(a: int, b: bytes):
+        def received_data_callback(a: str, b: bytes):
             print(time.perf_counter() - pickle.loads(b))
 
-        with CommunicationHelper("test_1", 8002, 8003, received_data_callback) as ch:
+        with CommunicationHelper("test_1", 8003, 8002, received_data_callback) as ch:
             i = 0
-            while(True):
-                ch.send(i, pickle.dumps(time.perf_counter(), protocol=pickle.HIGHEST_PROTOCOL))
-                i+=1
+            while True:
+                ch.send(f"user-{i}", pickle.dumps(
+                    time.perf_counter(), protocol=pickle.HIGHEST_PROTOCOL
+                ))
+                i += 1
                 time.sleep(1)
     """
 
     def __init__(
         self,
         name: str,
-        send_port: int,
         recv_port: int,
-        recv_callback: Callable[[int, bytes], None],
+        send_port: int,
+        recv_callback: Callable[[str, bytes], None],
+        run_in_another_thread: bool = True,
         host: str = "127.0.0.1",
+        encoding: str = "utf-8",
+        errors: str = "strict",
     ):
         """
         Args:
@@ -48,35 +54,51 @@ class CommunicationHelper:
             recv_port: Port used for receiving messages.
             recv_callback: Function invoked with (conn_id, payload).
             host: Host for connect/bind (default localhost).
+            encoding: Encoding used for conn_id string (default utf-8).
+            errors: Error handling for encode/decode (default 'strict').
         """
         self._ctx = zmq.Context.instance()
-        self._send_sock = self._ctx.socket(zmq.PUSH)
+
         self._recv_sock = self._ctx.socket(zmq.PULL)
         self._recv_callback = recv_callback
+        self._send_sock = self._ctx.socket(zmq.PUSH)
+
         self._stop = threading.Event()
+        self.online = True
         self.name = name
+        self._encoding = encoding
+        self._errors = errors
 
         send_addr = f"tcp://{host}:{send_port}"
         recv_addr = f"tcp://{host}:{recv_port}"
 
-        
+        self._recv_sock.bind(recv_addr)
         self._send_sock.connect(send_addr)
 
-        self._recv_sock.bind(recv_addr)
+        self.send_lock = threading.Lock()
 
-        self._thread = threading.Thread(
-            target=self._recv_loop, name=f"CommunicationHelperRecv_{name}", daemon=True
-        )
-        self._thread.start()
+        if run_in_another_thread:
+            self._thread = threading.Thread(
+                target=self._recv_loop,
+                name=f"CommunicationHelperRecv_{name}",
+                daemon=True,
+            )
+            self._thread.start()
+        else:
+            self._recv_loop()
 
-    def send(self, conn_id: int, payload: bytes) -> None:
+    def send(self, conn_id: str, payload: bytes) -> None:
         """
-        Send a message as two frames: 8-byte big-endian int + raw bytes.
+        Send a message as two frames: UTF-8 string bytes + raw bytes.
         """
+        if not isinstance(conn_id, str):
+            raise TypeError("conn_id must be a string")
         if not isinstance(payload, (bytes, bytearray, memoryview)):
             raise TypeError("payload must be bytes-like")
-        header = conn_id.to_bytes(8, byteorder="big", signed=True)
-        self._send_sock.send_multipart([header, bytes(payload)])
+
+        header = conn_id.encode(self._encoding, errors=self._errors)
+        with self.send_lock:
+            self._send_sock.send_multipart([header, bytes(payload)])
 
     def close(self) -> None:
         """
@@ -84,23 +106,23 @@ class CommunicationHelper:
         """
         self._stop.set()
         try:
-            # Trigger the receiver to unblock by using a short timeout option.
             self._recv_sock.setsockopt(zmq.RCVTIMEO, 100)
         except Exception:
             pass
-        self._thread.join(timeout=1.0)
+        try:
+            self._thread.join(timeout=1.0)
+        except Exception:
+            pass
         self._send_sock.close(linger=0)
         self._recv_sock.close(linger=0)
-        # Context is shared (instance), so we don't terminate it here.
+        # Do not terminate shared context here.
 
-    # Context manager support
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
         self.close()
 
-    # Internal receive loop
     def _recv_loop(self) -> None:
         poller = zmq.Poller()
         poller.register(self._recv_sock, zmq.POLLIN)
@@ -111,11 +133,15 @@ class CommunicationHelper:
                     parts = self._recv_sock.recv_multipart(flags=zmq.NOBLOCK)
                     if len(parts) != 2:
                         continue
-                    conn_id = int.from_bytes(parts[0], "big", signed=True)
+                    conn_id_bytes = parts[0]
                     payload = parts[1]
+                    conn_id = conn_id_bytes.decode(
+                        self._encoding, errors=self._errors
+                    )
                     self._recv_callback(conn_id, payload)
                 except zmq.Again:
                     continue
                 except Exception as e:
                     print("Error in the interprocess communication: ", e)
                     continue
+        self.online = False

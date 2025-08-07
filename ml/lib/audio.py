@@ -5,7 +5,7 @@ import numpy as np
 # import tensorflow as tf
 from scipy import signal
 from scipy.io import wavfile
-from hparams import hparams as hp
+from lib.hparams import hparams as hp
 
 # def load_wav(path, sr):
 #     # 加载音频文件，返回采样率为 sr 的音频波形
