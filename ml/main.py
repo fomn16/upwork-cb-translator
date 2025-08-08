@@ -247,34 +247,21 @@ def write_sdp_file(payload_type, codec_name, clock_rate, channels, rtp_port):
 
     return sdp_path
 
-def run_ffmpeg(sdp_path):
-    ffmpeg_proc = subprocess.Popen(
-        [
-            "ffmpeg",
-            "-loglevel", "info",
-            "-protocol_whitelist", "file,udp,rtp",
-            "-f", "sdp",
-            "-i", sdp_path,
-            "-c:a", "pcm_s16le",
-            "-ar", "48000",
-            "-ac", "2",
-            "-f", "wav",
-            "pipe:1"
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-
 # Creates pipe that reads the data from the provided SDP path
 def run_ffmpeg_input(sdp_path):
     return subprocess.Popen(
         [
             "ffmpeg",
+            "-nostdin",
             "-loglevel",
             "info",
             "-protocol_whitelist",
             "file,udp,rtp",
+            "-fflags", "nobuffer",       # disable buffering
+            "-flags", "low_delay",       # low-latency decoding
+            "-probesize", "32",          # minimal probing
+            "-analyzeduration", "0",     # no extra analysis delay
+            "-flush_packets", "1",       # flush decoded audio immediately
             "-f",
             "sdp",
             "-i",
@@ -291,14 +278,14 @@ def run_ffmpeg_input(sdp_path):
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        bufsize=SAMPLE_READ_SIZE
     )
-
-
 
 # Creates pipe that writes to the destination RTP endpoint
 def run_ffmpeg_output(target_ip: str, target_port: int, payload_type: int, ssrc: int):
     cmd = [
         "ffmpeg",
+        "-nostdin",
         "-f",
         "s16le",
         "-ar",
@@ -309,18 +296,25 @@ def run_ffmpeg_output(target_ip: str, target_port: int, payload_type: int, ssrc:
         "pipe:0",
         "-c:a",
         "libopus",
+        "-application", "lowdelay",   # low-latency Opus mode
+        "-frame_duration", "20",      # 20 ms frames (try 10 for even lower latency)
+        "-packet_loss", "0",          # no extra buffering for PLC
+        "-b:a", "64k",                 # bitrate (adjust as needed)
         "-payload_type",
         str(payload_type),
         "-ssrc",
         str(ssrc),
         "-f",
         "rtp",
-        f"rtp://{target_ip}:{target_port}",
+        f"rtp://{target_ip}:{target_port}?pkt_size=1200&buffer_size=65536",
     ]
     return subprocess.Popen(
-        cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        bufsize=0
     )
-
 
 # Logs FFmpeg errors
 def print_ffmpeg_logs(proc, label):
@@ -360,19 +354,22 @@ def pump_audio(
     session_id: str,
 ):
     global lipsync_audio_socket
-    buf = b""
     try:
         while True:
-            chunk = ff_in.stdout.read(SAMPLE_READ_SIZE)
-            if not chunk:
+            seg = ff_in.stdout.read(segment_size)
+            if not seg:
                 print("empty chunk, stopping")
                 break
-            buf += chunk
+            lipsync_audio_socket.send(session_id, seg)
+
+            '''buf.extend(chunk)  # O(1) append
+
             while len(buf) >= segment_size:
-                seg, buf = buf[:segment_size], buf[segment_size:]
+                seg = bytes(buf[:segment_size])  # make immutable for sending
+                del buf[:segment_size]           # remove from front in O(1)
                 lipsync_audio_socket.send(session_id, seg)
                 #focusing on setting up the lipsync pipeline
-                '''if seamless_streaming == 1:
+                if seamless_streaming == 1:
                     process_translation_chunk(
                         seg,
                         target_lang=target_lang,
@@ -506,10 +503,15 @@ def run_ffmpeg_video_pipe(sdp_path, width=640, height=480, fps=15):
     print(f"Running FFmpeg with SDP path: {sdp_path}")
     cmd = [
         "ffmpeg",
+        "-nostdin",
         "-loglevel",
         "info",
         "-protocol_whitelist",
         "file,udp,rtp",
+        "-flags", "low_delay",          # low-latency decoding
+        "-probesize", "32",              # minimal probing
+        "-analyzeduration", "0",         # no extra analysis delay
+        "-flush_packets", "1",           # flush packets ASAP
         "-f",
         "sdp",
         "-i",
@@ -525,7 +527,7 @@ def run_ffmpeg_video_pipe(sdp_path, width=640, height=480, fps=15):
         "pipe:1",
     ]
     return subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**8
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=width*height*3
     )
 
 def run_ffmpeg_video_output(
@@ -541,6 +543,7 @@ def run_ffmpeg_video_output(
     # FFmpeg command: read raw BGR frames from stdin, encode VP8, send RTP/RTCP
     cmd = [
         "ffmpeg",
+        "-nostdin",
         "-re",
         # Raw video from STDIN
         "-f",
@@ -553,19 +556,31 @@ def run_ffmpeg_video_output(
         str(fps),
         "-i",
         "pipe:0",
+        "-an",
         # Encode as VP8
         "-c:v",
         "libvpx",
         # Convert to yuv420p for VP8 encoder compatibility
         "-pix_fmt",
         "yuv420p",
+
+        # Low-latency libvpx settings
+        "-deadline",
+        "realtime",       # realtime mode
+        "-cpu-used",
+        "8",              # higher = faster, lower quality; try 5..8
+        "-lag-in-frames",
+        "0",              # no lookahead
+        "-rc_lookahead",
+        "0",              # no RC lookahead
+        
         # Rate control
         "-b:v",
         f"{bitrate}k",
         "-maxrate",
         f"{bitrate}k",
         "-bufsize",
-        f"{2*bitrate}k",
+        f"{max(int(bitrate * 0.5), 100)}k",
         "-g",
         str(fps * 2), # send keyframe every 2 seconds
         "-threads",
@@ -578,7 +593,10 @@ def run_ffmpeg_video_output(
         "-ssrc",
         str(ssrc),
         f"rtp://{target_ip}:{target_port}"
-        f"?localrtcpport=0&rtcpport={target_port+1}&pkt_size=1200",
+        f"?localrtcpport=0"
+        f"&rtcpport={target_port+1}"
+        f"&pkt_size=1200"
+        f"&buffer_size=65536"
     ]
 
     return subprocess.Popen(
@@ -586,7 +604,7 @@ def run_ffmpeg_video_output(
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
-        bufsize=10**7,
+        bufsize=0,
     )
 
 def foward_frames_for_processing(
@@ -608,6 +626,7 @@ def foward_frames_for_processing(
     except Exception as e:
         print(f"⚠️ Error in foward_frames_for_processing: {e}")
     finally:
+        print(f"⚠️ closing FFmpeg video pipes for session {session_id}")
         try:
             in_proc.stdout.close()
             in_proc.stderr.close()
@@ -649,10 +668,6 @@ async def initiate_video_capture(data: VideoCaptureRequest):
 
     print(f"🔄️ FFmpeg process started with PID {ffmpeg_in.pid}")
 
-    threading.Thread(
-        target=print_ffmpeg_logs, args=(ffmpeg_in, "FFmpeg-VIDEO"), daemon=True
-    ).start()
-
     ffmpeg_out = run_ffmpeg_video_output(
         MEDIASERVER_IP,  # Mediasoup plain transport IP
         data.outputPort,  # Mediasoup plain transport video port
@@ -662,6 +677,15 @@ async def initiate_video_capture(data: VideoCaptureRequest):
         FRAME_HEIGHT
     )
     video_out_pipes[data.sessionId] = ffmpeg_out
+
+
+    threading.Thread(
+        target=print_ffmpeg_logs, args=(ffmpeg_in, "FFmpeg-video-in"), daemon=True
+    ).start()
+
+    threading.Thread(
+        target=print_ffmpeg_logs, args=(ffmpeg_out, "FFmpeg-video-out"), daemon=True
+    ).start()
 
     threading.Thread(
         target=foward_frames_for_processing,
