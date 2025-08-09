@@ -29,3 +29,6 @@ class AudioQueue:
             dequeued_data = self.data[:size]
             self.data = self.data[size:]
             return dequeued_data
+    
+    def length(self):
+        return len(self.data)

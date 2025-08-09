@@ -52,6 +52,7 @@ class Session:
         self.session_id = session_id
         self.raw_audio_in = AudioQueue()
         self.translated_audio_in = AudioQueue()
+        self.translated_audio_buffer_history = MaxAudioQueueSizeHistory()
         self.video_in = VideoQueue()
 
         threading.Thread(
@@ -64,6 +65,7 @@ class Session:
 
     def add_translated_audio(self, audio_bytes):
         self.translated_audio_in.enqueue(audio_bytes)
+        self.translated_audio_buffer_history.push(self.translated_audio_in.length())
 
     def add_video(self, video_bytes):
         frame = np.frombuffer(video_bytes, np.uint8).reshape((FRAME_WIDTH, FRAME_HEIGHT, 3))

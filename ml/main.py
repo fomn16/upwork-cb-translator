@@ -496,7 +496,7 @@ def write_video_sdp_file(payload_type, codec_name, clock_rate, rtp_port):
     return path
 
 
-def run_ffmpeg_video_pipe(sdp_path, width=640, height=480, fps=15):
+def run_ffmpeg_video_pipe(sdp_path):
     print(f"Running FFmpeg with SDP path: {sdp_path}")
     cmd = [
         "ffmpeg",
@@ -514,17 +514,17 @@ def run_ffmpeg_video_pipe(sdp_path, width=640, height=480, fps=15):
         "-i",
         sdp_path,
         "-an",  # no audio
-        "-r", str(fps),  # Cap the frame rate (e.g., 15 fps)
+        "-r", str(FRAME_RATE),  # Cap the frame rate (e.g., 15 fps)
         "-f",
         "rawvideo",
         "-pix_fmt",
         "bgr24",
         "-s",
-        f"{width}x{height}",
+        f"{FRAME_WIDTH}x{FRAME_HEIGHT}",
         "pipe:1",
     ]
     return subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=width*height*3
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=FRAME_WIDTH*FRAME_HEIGHT*3
     )
 
 def run_ffmpeg_video_output(
@@ -532,9 +532,6 @@ def run_ffmpeg_video_output(
     target_port,
     payload_type: int,
     ssrc: int,
-    width=640,
-    height=480,
-    fps=15,
     bitrate=2500,  # kbps
 ):
     # FFmpeg command: read raw BGR frames from stdin, encode VP8, send RTP/RTCP
@@ -548,9 +545,9 @@ def run_ffmpeg_video_output(
         "-pix_fmt",
         "bgr24",  # input frame format (BGR uint8)
         "-s:v",
-        f"{width}x{height}",
+        f"{FRAME_WIDTH}x{FRAME_HEIGHT}",
         "-r",
-        str(fps),
+        str(FRAME_RATE),
         "-i",
         "pipe:0",
         "-an",
@@ -579,7 +576,7 @@ def run_ffmpeg_video_output(
         "-bufsize",
         f"{max(int(bitrate * 0.5), 100)}k",
         "-g",
-        str(fps * 2), # send keyframe every 2 seconds
+        str(FRAME_RATE * 2), # send keyframe every 2 seconds
         "-threads",
         "4",
         # Output as RTP (video only)
@@ -659,9 +656,7 @@ async def initiate_video_capture(data: VideoCaptureRequest):
         rtp_port=data.rtpPort,
     )
 
-    ffmpeg_in = run_ffmpeg_video_pipe(
-        sdp_path, width=FRAME_WIDTH, height=FRAME_HEIGHT
-    )
+    ffmpeg_in = run_ffmpeg_video_pipe(sdp_path)
 
     print(f"🔄️ FFmpeg process started with PID {ffmpeg_in.pid}")
 
@@ -669,9 +664,7 @@ async def initiate_video_capture(data: VideoCaptureRequest):
         MEDIASERVER_IP,  # Mediasoup plain transport IP
         data.outputPort,  # Mediasoup plain transport video port
         data.payloadType,
-        data.ssrc,
-        FRAME_WIDTH,
-        FRAME_HEIGHT
+        data.ssrc
     )
     video_out_pipes[data.sessionId] = ffmpeg_out
 
