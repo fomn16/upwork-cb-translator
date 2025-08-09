@@ -353,21 +353,21 @@ def pump_audio(
     target_lang,
     session_id: str,
 ):
-    global lipsync_audio_socket
+    global lipsync_translated_audio_socket, lipsync_raw_audio_socket
     try:
         while True:
             seg = ff_in.stdout.read(segment_size)
             if not seg:
                 print("empty chunk, stopping")
                 break
-            lipsync_audio_socket.send(session_id, seg)
+            lipsync_translated_audio_socket.send(session_id, seg)
+            lipsync_raw_audio_socket.send(session_id, seg)
 
             '''buf.extend(chunk)  # O(1) append
 
             while len(buf) >= segment_size:
                 seg = bytes(buf[:segment_size])  # make immutable for sending
                 del buf[:segment_size]           # remove from front in O(1)
-                lipsync_audio_socket.send(session_id, seg)
                 #focusing on setting up the lipsync pipeline
                 if seamless_streaming == 1:
                     process_translation_chunk(

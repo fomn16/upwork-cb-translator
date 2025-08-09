@@ -30,5 +30,6 @@ def receive_synced_video(session_id:int, video_bytes:bytes):
         print("⚠️ FFmpeg-video-out pipe closed")
         return
     
-lipsync_audio_socket = CommunicationHelper("lipsync_audio_socket", LIP_SYNC_AUDIO_OUT_PORT, LIP_SYNC_AUDIO_IN_PORT, receive_synced_audio)
+lipsync_raw_audio_socket = CommunicationHelper("lipsync_raw_audio_socket", None, LIP_SYNC_RAW_AUDIO_IN_PORT, None)
+lipsync_translated_audio_socket = CommunicationHelper("lipsync_translated_audio_socket", LIP_SYNC_AUDIO_OUT_PORT, LIP_SYNC_TRANSLATED_AUDIO_IN_PORT, receive_synced_audio)
 lipsync_video_socket = CommunicationHelper("lipsync_video_socket", LIP_SYNC_VIDEO_OUT_PORT, LIP_SYNC_VIDEO_IN_PORT, receive_synced_video)

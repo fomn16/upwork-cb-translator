@@ -1,14 +1,5 @@
 import os
-import sys
-
-CURRENT_DIR = os.path.dirname(__file__)
-PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
-import pickle
 import torch
-from multiprocessing.connection import Listener
 
 #for lip sync
 import numpy as np
@@ -19,20 +10,11 @@ import lib.audio as audio
 import argparse
 import time
 from ultralytics import YOLO
-import ffmpeg
 import cv2
 import threading
 import queue
 import torchaudio
 import io
-
-from typing import Dict
-from lib.communication_helper import CommunicationHelper
-from lib.audio_queue import AudioQueue
-from lib.video_queue import VideoQueue
-
-from config.video_config import *
-from config.connection_config import *
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -298,95 +280,6 @@ def run_lipsync_from_frames(frame_buffer: list, audio_bytes: bytes, output_path:
             print(f"✅ Output muxed video: {final_output_path}")
 
     return no_audio_video_path, final_output_path
-
-class Session:
-    def __init__(self, session_id:str, audio_socket: CommunicationHelper, video_socket: CommunicationHelper):
-        self.session_id = session_id
-        self.audio_socket = audio_socket
-        self.video_socket = video_socket
-        self.audio_in = AudioQueue()
-        self.video_in = VideoQueue()
-
-        threading.Thread(
-            target=self.process,
-            daemon=True,
-        ).start()
-
-    def add_audio(self, audio_bytes):
-        self.audio_in.enqueue(audio_bytes)
-
-    def add_video(self, video_bytes):
-        frame = np.frombuffer(video_bytes, np.uint8).reshape((FRAME_WIDTH, FRAME_HEIGHT, 3))
-        self.video_in.enqueue(frame)
-
-    def process(self):
-        next_time = time.perf_counter()
-        try:
-            while not self.audio_in.closed and not self.video_in.closed:
-                # TODO, simple passthrough for now
-                audio_seg = self.audio_in.dequeue(SAMPLE_READ_SIZE)
-                if audio_seg:
-                    self.audio_socket.send(self.session_id, audio_seg)
-
-                video_frame = self.video_in.dequeue()
-                if video_frame is not None and getattr(video_frame, "size", 0) > 0:
-                    self.video_socket.send(self.session_id, video_frame.tobytes(order="C"))
-
-                # TODO, find a way to avoid this (execute loop as soon as any info is received)
-                next_time += OUTPUT_PERIOD
-                sleep_time = next_time - time.perf_counter()
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                else:
-                    next_time = time.perf_counter()
-        except Exception as e:
-            print(f"Error in processing thread: {e}")
-            raise
-        finally:
-            self.audio_in.closed = True  # TODO, refactor to work the same way as the video queue
-            self.video_in.close()
-
-class SessionManager:
-    def __init__(self, audio_socket: CommunicationHelper, video_socket: CommunicationHelper):
-        self.audio_socket = audio_socket
-        self.video_socket = video_socket
-
-    sessions_dict: Dict[str, Session] = {}
-
-    def create_session(self, session_id:str):
-        print(f"[Lip-Sync->SessionManager] Creating session with id {session_id}")
-        self.sessions_dict[session_id] = Session(session_id, self.audio_socket, self.video_socket)
-
-    def add_audio_to_session(self, session_id, raw_bytes):
-        if session_id not in self.sessions_dict:
-            self.create_session(session_id)
-        self.sessions_dict[session_id].add_audio(raw_bytes)
-
-    def add_video_to_session(self, session_id, raw_bytes):
-        if session_id not in self.sessions_dict:
-            self.create_session(session_id)
-        self.sessions_dict[session_id].add_video(raw_bytes)
-
-def audio_received(session_id, raw_bytes):
-    global sessionManager
-    sessionManager.add_audio_to_session(session_id, raw_bytes)
-
-def video_received(session_id, raw_bytes):
-    global sessionManager
-    sessionManager.add_video_to_session(session_id, raw_bytes)
-
-audio_socket = CommunicationHelper("lip_sync_audio_socket", LIP_SYNC_AUDIO_IN_PORT, LIP_SYNC_AUDIO_OUT_PORT, audio_received)
-video_socket = CommunicationHelper("lip_sync_audio_socket", LIP_SYNC_VIDEO_IN_PORT, LIP_SYNC_VIDEO_OUT_PORT, video_received)
-try:
-    print("[Lip-Sync] Creating session manager")
-    sessionManager = SessionManager(audio_socket, video_socket)
-
-    while(audio_socket.online and video_socket.online):
-        time.sleep(1)
-finally:
-    print("[Lip-Sync] Closing all processing")
-    audio_socket.close()
-    video_socket.close()
 
 '''  
 with Listener(address, authkey=authkey) as listener:

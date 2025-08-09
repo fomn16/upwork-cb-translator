@@ -40,8 +40,8 @@ class CommunicationHelper:
     def __init__(
         self,
         name: str,
-        recv_port: int,
-        send_port: int,
+        recv_port: int | None,
+        send_port: int | None,
         recv_callback: Callable[[str, bytes], None],
         run_in_another_thread: bool = True,
         com_method: str = "ipc",
@@ -77,25 +77,30 @@ class CommunicationHelper:
             send_addr = f"ipc:///tmp/com_zmq_{send_port}.ipc"
             recv_addr = f"ipc:///tmp/com_zmq_{recv_port}.ipc"
 
-        self._recv_sock.bind(recv_addr)
-        self._send_sock.connect(send_addr)
-
-        self.send_lock = threading.Lock()
-
-        if run_in_another_thread:
-            self._thread = threading.Thread(
-                target=self._recv_loop,
-                name=f"CommunicationHelperRecv_{name}",
-                daemon=True,
-            )
-            self._thread.start()
+        if(send_port is not None):
+            self.send_lock = threading.Lock()
+            self._send_sock.connect(send_addr)
         else:
-            self._recv_loop()
+            self.send_lock = None
+
+        if(recv_port is not None):
+            self._recv_sock.bind(recv_addr)
+            if run_in_another_thread:
+                self._thread = threading.Thread(
+                    target=self._recv_loop,
+                    name=f"CommunicationHelperRecv_{name}",
+                    daemon=True,
+                )
+                self._thread.start()
+            else:
+                self._recv_loop()
 
     def send(self, conn_id: str, payload: bytes) -> None:
         """
         Send a message as two frames: UTF-8 string bytes + raw bytes.
         """
+        if self.send_lock == None:
+            raise TypeError("send_port must be provided in the constructor in order to be able to send messages")
         if not isinstance(conn_id, str):
             raise TypeError("conn_id must be a string")
         if not isinstance(payload, (bytes, bytearray, memoryview)):
