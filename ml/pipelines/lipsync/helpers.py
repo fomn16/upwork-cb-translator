@@ -347,9 +347,8 @@ def face_detect_once(frame):
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
 
     with face_detector_lock:
-        a = time.perf_counter()
-        result = face_detector_instance.detect(mp_image)
-        print(time.perf_counter() - a)
+        with torch.inference_mode():
+            result = face_detector_instance.detect(mp_image)
 
     if result is None or len(result.detections) != 1:
         return None

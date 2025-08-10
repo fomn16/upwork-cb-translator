@@ -18,3 +18,5 @@ you might need to run the following to add a few env variables before runing mai
 
 export DISPLAY=:0
 export EGL_PLATFORM=surfaceless
+
+most important lipsync configurations are present in ../../config/lipsync_config.py
