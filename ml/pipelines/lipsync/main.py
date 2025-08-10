@@ -20,6 +20,8 @@ from config.lipsync_config import *
 
 from collections import deque
 
+from helpers import *
+
 # histogram with fast max lookup
 class MaxAudioQueueSizeHistory:
     def __init__(self):
@@ -57,33 +59,49 @@ class Session:
         self.translated_audio_size_history = MaxAudioQueueSizeHistory()
 
         self.video_in = VideoQueue()
+        self.face_positions = FaceDetectProcessor()
+
+        self.received_data = threading.Event()
 
         threading.Thread(
             target=self.process,
             daemon=True,
         ).start()
 
+    # raw audio is not used for now
     def add_raw_audio(self, audio_bytes):
-        self.raw_audio_in.enqueue(audio_bytes)
+        #self.raw_audio_in.enqueue(audio_bytes)
+        #self.received_data.set()
+        pass
 
     def add_translated_audio(self, audio_bytes):
         self.translated_audio_in.enqueue(audio_bytes)
         self.translated_audio_size_history.push(self.translated_audio_in.length())
+        self.received_data.set()
 
     def add_video(self, video_bytes):
-        frame = np.frombuffer(video_bytes, np.uint8).reshape((FRAME_WIDTH, FRAME_HEIGHT, 3))
+        frame = np.frombuffer(video_bytes, np.uint8).reshape((FRAME_HEIGHT,FRAME_WIDTH, 3))
+        self.face_positions.enqueue(frame)
         self.video_in.enqueue(frame)
+        self.received_data.set()
 
     def close(self):
         self.translated_audio_in.closed = True  # TODO, refactor to work the same way as the video queue
         self.raw_audio_in.closed = True  # TODO, refactor to work the same way as the video queue
         self.video_in.close()
+        self.face_positions.close()
 
     def process(self):
         global translated_audio_socket, video_socket
-        next_time = time.perf_counter()
         try:
-            while not self.raw_audio_in.closed and not self.translated_audio_in.closed and not self.video_in.closed:
+            while True: 
+                timeout = not self.received_data.wait(timeout=30) # waits for data to be received, also has a timeout
+
+                if(self.raw_audio_in.closed or self.translated_audio_in.closed or self.video_in.closed):    # IMPORTANT, must be refactored if audio/video is eventually optional
+                    break
+                if(timeout):
+                    continue # if woke up due to timeout, goes to the next loop iteration
+
                 # TODO, simple passthrough for now
                 audio_seg = self.translated_audio_in.dequeue(SAMPLE_READ_SIZE)
                 if audio_seg:
@@ -91,15 +109,14 @@ class Session:
 
                 video_frame = self.video_in.dequeue()
                 if video_frame is not None and getattr(video_frame, "size", 0) > 0:
-                    video_socket.send(self.session_id, video_frame.tobytes(order="C"))
+                    # Make a writable copy
+                    video_frame = video_frame.copy()
+                    f = self.face_positions.dequeue()
+                    if f is not None:
+                        x1, y1, x2, y2 = f
+                        cv2.rectangle(video_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-                # TODO, find a way to avoid this (execute loop as soon as any info is received)
-                next_time += OUTPUT_PERIOD
-                sleep_time = next_time - time.perf_counter()
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                else:
-                    next_time = time.perf_counter()
+                    video_socket.send(self.session_id, video_frame.tobytes(order="C"))
         except Exception as e:
             print(f"Error in processing thread: {e}")
             raise
@@ -108,7 +125,6 @@ class Session:
 
 class SessionManager:
     sessions_dict: Dict[str, Session] = {}
-
     def ensure_session_exists(self, session_id:str):
         if session_id not in self.sessions_dict:
             print(f"[Lip-Sync->SessionManager] Creating session with id {session_id}")
@@ -147,7 +163,7 @@ if __name__ == "__main__":
         print("[Lip-Sync] Creating session manager")
         sessionManager = SessionManager()
 
-        while(raw_audio_socket.online and  translated_audio_socket.online and video_socket.online):
+        while(raw_audio_socket.online and translated_audio_socket.online and video_socket.online):
             time.sleep(1)
     finally:
         print("[Lip-Sync] Closing all processing")

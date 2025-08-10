@@ -66,3 +66,5 @@ ml/TTS
 
 yolov8n-face.pt
 wav2lip_Chinese.pth
+face_detector.task
+ml/pipelines/lipsync/blaze_face_short_range.tflite

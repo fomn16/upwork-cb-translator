@@ -9,7 +9,9 @@ from models import Wav2Lip
 import lib.audio as audio
 import argparse
 import time
-from ultralytics import YOLO
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 import cv2
 import threading
 import queue
@@ -17,8 +19,9 @@ import torchaudio
 import io
 
 from config.lipsync_config import *
+from config.video_config import *
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 parser = argparse.ArgumentParser(description='Inference code for lip-syncing videos using Wav2Lip models')
 parser.add_argument('--checkpoint_path', type=str, default='/Users/apple/Downloads/Lip_Sync_Wav2Lip/checkpoints/wav2lip_Chinese.pth')
@@ -44,11 +47,6 @@ if os.path.isfile(args.face) and args.face.split('.')[-1] in ['jpg', 'png', 'jpe
 from ultralytics.utils import LOGGER
 LOGGER.setLevel("ERROR")
 
-#detector = MTCNN(device=device)
-detector = YOLO('yolov8n-face.pt').to(device)
-dummy_img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-_ = detector.predict(dummy_img, verbose=False)
-
 def face_detect_many(images):
     start_time = time.time()
     results = []
@@ -57,7 +55,7 @@ def face_detect_many(images):
     for i, img in enumerate(images):
         if i % 10 == 0:
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            yolo_result = detector.predict(img_rgb, verbose=False)
+            yolo_result = face_detector_instance.predict(img_rgb, verbose=False)
             boxes = yolo_result[0].boxes.xyxy
 
             if boxes is None or len(boxes) == 0:
@@ -307,23 +305,74 @@ with Listener(address, authkey=authkey) as listener:
             except Exception as e:
                 print(f"[Audio Worker] Error: {e}")
                 conn.send((None, None, str(e)))
-'''  
+'''
+
+print("Loading MediaPipe Face Detector (GPU)...")
+
+# Path to the downloaded .task model
+MODEL_PATH = "blaze_face_short_range.tflite" #https://ai.google.dev/edge/mediapipe/solutions/vision/face_detector/index#models
+
+# Create GPU-enabled MediaPipe Face Detector
+base_options = python.BaseOptions(
+    model_asset_path=MODEL_PATH,
+    delegate=python.BaseOptions.Delegate.GPU  # Force GPU usage
+)
+
+options = vision.FaceDetectorOptions(
+    base_options=base_options,
+    running_mode=vision.RunningMode.IMAGE,
+    min_detection_confidence=0.5
+)
+
+face_detector_instance = vision.FaceDetector.create_from_options(options)
+face_detector_lock = threading.Lock()
+
+print("MediaPipe Face Detector (GPU) loaded.")
+
+# Warm-up
+dummy_img = np.random.randint(0, 255, (FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
+mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=dummy_img)
+_ = face_detector_instance.detect(mp_image)
+print("Warm-up done.")
 
 
 def face_detect_once(frame):
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    yolo_result = detector.predict(frame_rgb, verbose=False)
-    boxes = yolo_result[0].boxes.xyxy
+    """
+    Detect exactly one face in the frame using MediaPipe Face Detection (GPU).
+    Returns [x1, y1, x2, y2] if exactly one face is found, otherwise None.
+    """
+    global face_detector_instance, face_detector_lock
 
-    if boxes is None or len(boxes) != 1:    # IMPORTANT, if more than one face is detected, returns None (same as if no face is detected)
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+
+    with face_detector_lock:
+        a = time.perf_counter()
+        result = face_detector_instance.detect(mp_image)
+        print(time.perf_counter() - a)
+
+    if result is None or len(result.detections) != 1:
         return None
 
-    x1, y1, x2, y2 = boxes[0].int().tolist()
-    pady1, pady2, padx1, padx2 = args.pads
-    y1 = max(0, y1 - pady1)
-    y2 = min(frame.shape[0], y2 + pady2)
-    x1 = max(0, x1 - padx1)
-    x2 = min(frame.shape[1], x2 + padx2)
+    detection = result.detections[0]
+    bbox = detection.bounding_box
+
+    # Convert to pixel coordinates
+    x1 = int(bbox.origin_x)
+    y1 = int(bbox.origin_y)
+    x2 = int(bbox.origin_x + bbox.width)
+    y2 = int(bbox.origin_y + bbox.height)
+
+    # Apply padding if args.pads exists
+    try:
+        pady1, pady2, padx1, padx2 = args.pads
+        y1 = max(0, y1 - pady1)
+        y2 = min(frame.shape[0], y2 + pady2)
+        x1 = max(0, x1 - padx1)
+        x2 = min(frame.shape[1], x2 + padx2)
+    except NameError:
+        pass
+
     return [x1, y1, x2, y2]
 
 class FaceDetectProcessor:
@@ -358,19 +407,22 @@ class FaceDetectProcessor:
 
     def dequeue(self):
         with self.lock:
-            if self.current_output_count == 0 and self.out_queue:
-                self.position_to_output = self.out_queue.pop(0)
-            self.current_input_count = (self.current_input_count + 1)%FACE_DETECT_FRAME_SKIP
+            if(self.out_queue):
+                if self.current_output_count == 0:
+                    self.position_to_output = self.out_queue.pop(0)
+                self.current_output_count = (self.current_output_count + 1)%FACE_DETECT_FRAME_SKIP
             return self.position_to_output
 
     def process(self):
         try:
             while True:
-                self.semaphore.acquire() # this blocks the thread until a frame is received
+                timeout = not self.input_semaphore.acquire(timeout=30) # this blocks the thread until a frame is received
 
                 with self.lock:
                     if self.closed:
                         break
+                    if timeout:
+                        continue
                     frame_to_process = self.in_queue.pop(0)
 
                 face_location = face_detect_once(frame_to_process)

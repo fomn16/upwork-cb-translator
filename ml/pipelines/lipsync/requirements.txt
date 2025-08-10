@@ -6,3 +6,4 @@ ultralytics
 ffmpeg
 torchaudio
 zmq
+mediapipe
