@@ -27,7 +27,7 @@ class VideoQueue:
             )
 
     # Enqueue a new frame (np.ndarray in BGR24)
-    def enqueue(self, frame: np.ndarray, copy: bool = False) -> None:
+    def enqueue(self, frame: np.ndarray) -> None:
         """
         Add a frame to the queue.
 
@@ -37,7 +37,7 @@ class VideoQueue:
         """
         self._validate_frame(frame)
         with self.lock:
-            self.frames.append(frame.copy() if copy else frame)
+            self.frames.append(frame)
             self.last_write = time.perf_counter()
 
     # Dequeue a single frame (FIFO); returns None if queue is empty
@@ -59,13 +59,12 @@ class VideoQueue:
             return self.frames.pop(0)
 
     # Peek at the next frame without removing; returns None if empty
-    def peek(self, copy: bool = False) -> Optional[np.ndarray]:
+    def peek(self) -> Optional[np.ndarray]:
         with self.lock:
             self._mark_closed_if_idle()
             if not self.frames:
                 return None
-            f = self.frames[0]
-            return f.copy() if copy else f
+            return self.frames[0]
 
     # Current number of enqueued frames
     def __len__(self) -> int:

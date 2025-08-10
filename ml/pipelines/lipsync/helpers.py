@@ -16,6 +16,8 @@ import queue
 import torchaudio
 import io
 
+from config.lipsync_config import *
+
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 parser = argparse.ArgumentParser(description='Inference code for lip-syncing videos using Wav2Lip models')
@@ -45,9 +47,9 @@ LOGGER.setLevel("ERROR")
 #detector = MTCNN(device=device)
 detector = YOLO('yolov8n-face.pt').to(device)
 dummy_img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-_ = detector.predict(dummy_img, verbose=False)# def face_detect1(images):
+_ = detector.predict(dummy_img, verbose=False)
 
-def face_detect(images):
+def face_detect_many(images):
     start_time = time.time()
     results = []
     last_box = None
@@ -96,7 +98,7 @@ def datagen(frames, mels):
     #print(len(frames), len(mels))
     if args.box[0] == -1:
         print("face detection in data gen")
-        face_det_results = face_detect(frames if not args.static else [frames[0]])
+        face_det_results = face_detect_many(frames if not args.static else [frames[0]])
     else:
         print('Using the specified bounding box...')
         y1, y2, x1, x2 = args.box
@@ -306,3 +308,74 @@ with Listener(address, authkey=authkey) as listener:
                 print(f"[Audio Worker] Error: {e}")
                 conn.send((None, None, str(e)))
 '''  
+
+
+def face_detect_once(frame):
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    yolo_result = detector.predict(frame_rgb, verbose=False)
+    boxes = yolo_result[0].boxes.xyxy
+
+    if boxes is None or len(boxes) != 1:    # IMPORTANT, if more than one face is detected, returns None (same as if no face is detected)
+        return None
+
+    x1, y1, x2, y2 = boxes[0].int().tolist()
+    pady1, pady2, padx1, padx2 = args.pads
+    y1 = max(0, y1 - pady1)
+    y2 = min(frame.shape[0], y2 + pady2)
+    x1 = max(0, x1 - padx1)
+    x2 = min(frame.shape[1], x2 + padx2)
+    return [x1, y1, x2, y2]
+
+class FaceDetectProcessor:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.in_queue = []  # stores frames for processing
+        self.out_queue = [] # stores face locations found in frames
+        self.position_to_output = None
+        self.closed = False
+
+        # variables for controlling the "process for every n-th frame" behavior
+        self.current_input_count = 0
+        self.current_output_count = 0
+
+        self.input_semaphore = threading.Semaphore(0)
+
+        threading.Thread(
+            target=self.process,
+            daemon=True,
+        ).start()
+    
+    def close(self):
+        with self.lock:
+            self.closed = True
+
+    def enqueue(self, frame):
+        with self.lock:
+            if self.current_input_count == 0:
+                self.in_queue.append(frame)
+                self.input_semaphore.release()
+            self.current_input_count = (self.current_input_count + 1)%FACE_DETECT_FRAME_SKIP
+
+    def dequeue(self):
+        with self.lock:
+            if self.current_output_count == 0 and self.out_queue:
+                self.position_to_output = self.out_queue.pop(0)
+            self.current_input_count = (self.current_input_count + 1)%FACE_DETECT_FRAME_SKIP
+            return self.position_to_output
+
+    def process(self):
+        try:
+            while True:
+                self.semaphore.acquire() # this blocks the thread until a frame is received
+
+                with self.lock:
+                    if self.closed:
+                        break
+                    frame_to_process = self.in_queue.pop(0)
+
+                face_location = face_detect_once(frame_to_process)
+
+                with self.lock:
+                    self.out_queue.append(face_location)
+        finally:
+            self.close()

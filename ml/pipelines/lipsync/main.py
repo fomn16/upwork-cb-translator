@@ -11,8 +11,8 @@ import time
 
 from typing import Dict
 from lib.communication_helper import CommunicationHelper
-from lib.audio_queue import AudioQueue
-from lib.video_queue import VideoQueue
+from lib.queue.audio_queue import AudioQueue
+from lib.queue.video_queue import VideoQueue
 
 from config.video_config import *
 from config.connection_config import *
@@ -50,9 +50,12 @@ class LipSyncManager:
 class Session:
     def __init__(self, session_id:str):
         self.session_id = session_id
+
         self.raw_audio_in = AudioQueue()
+
         self.translated_audio_in = AudioQueue()
-        self.translated_audio_buffer_history = MaxAudioQueueSizeHistory()
+        self.translated_audio_size_history = MaxAudioQueueSizeHistory()
+
         self.video_in = VideoQueue()
 
         threading.Thread(
@@ -65,11 +68,16 @@ class Session:
 
     def add_translated_audio(self, audio_bytes):
         self.translated_audio_in.enqueue(audio_bytes)
-        self.translated_audio_buffer_history.push(self.translated_audio_in.length())
+        self.translated_audio_size_history.push(self.translated_audio_in.length())
 
     def add_video(self, video_bytes):
         frame = np.frombuffer(video_bytes, np.uint8).reshape((FRAME_WIDTH, FRAME_HEIGHT, 3))
         self.video_in.enqueue(frame)
+
+    def close(self):
+        self.translated_audio_in.closed = True  # TODO, refactor to work the same way as the video queue
+        self.raw_audio_in.closed = True  # TODO, refactor to work the same way as the video queue
+        self.video_in.close()
 
     def process(self):
         global translated_audio_socket, video_socket
@@ -96,8 +104,7 @@ class Session:
             print(f"Error in processing thread: {e}")
             raise
         finally:
-            self.translated_audio_in.closed = True  # TODO, refactor to work the same way as the video queue
-            self.video_in.close()
+            self.close()
 
 class SessionManager:
     sessions_dict: Dict[str, Session] = {}
