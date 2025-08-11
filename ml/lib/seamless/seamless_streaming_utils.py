@@ -19,6 +19,8 @@ import torchaudio
 import torch
 import time
 
+from config.audio_config import *
+
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 16000  # 1-second chunks
 
@@ -96,7 +98,7 @@ def play_audio1(audio_bytes):
     sd.play(audio_np, samplerate=sr)
     sd.wait()
 
-def play_audio(audio_bytes, sample_rate=48000, num_channels=2, sample_width=2):
+def play_audio(audio_bytes, sample_rate=EXTERNAL_SAMPLERATE, num_channels=2, sample_width=2):
     # Determine correct dtype from sample_width
     dtype_map = {1: np.uint8, 2: np.int16, 4: np.int32}
     dtype = dtype_map[sample_width]
@@ -137,7 +139,7 @@ def build_streaming_system(model_configs, agent_class):
     return system
 
 
-def bytes_to_float32_mono_array(audio_bytes: bytes, input_sr=48000, target_sr=16000) -> np.ndarray:
+def bytes_to_float32_mono_array(audio_bytes: bytes, input_sr=EXTERNAL_SAMPLERATE, target_sr=16000) -> np.ndarray:
     # 1. Decode stereo int16 bytes to numpy array
     audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
     audio_np = audio_np.reshape(-1, 2)  # 2 channels
@@ -154,7 +156,7 @@ def bytes_to_float32_mono_array(audio_bytes: bytes, input_sr=48000, target_sr=16
 
     return resampled.squeeze(0).numpy()  # Return as 1D float32 array
 
-def stream_translate_from_bytes(audio_bytes: bytes, system, system_states, input_sr=48000, target_sr=16000, tgt_lang="hin"):
+def stream_translate_from_bytes(audio_bytes: bytes, system, system_states, input_sr=EXTERNAL_SAMPLERATE, target_sr=16000, tgt_lang="hin"):
     # Convert bytes → float32 mono array at 16kHz
     float_audio = bytes_to_float32_mono_array(audio_bytes, input_sr=input_sr, target_sr=target_sr)
 

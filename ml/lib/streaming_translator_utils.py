@@ -12,6 +12,8 @@ from simuleval import options
 from pydub import AudioSegment
 from pydub.playback import play
 
+from config.audio_config import *
+
 SAMPLE_RATE = 16000
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 PADDING_DURATION = 1  # Seconds
@@ -60,7 +62,7 @@ class StatelessBytesTranslator:
             print(f"❌ Audio decode failed: {e}")
             return None
 
-    def translate_chunk(self, audio_bytes, input_sample_rate=48000, sample_width=2, channels=2):
+    def translate_chunk(self, audio_bytes, input_sample_rate=EXTERNAL_SAMPLERATE, sample_width=2, channels=2):
         audio_np = self._bytes_to_audio(audio_bytes, input_sample_rate, sample_width, channels)
         if audio_np is None or len(audio_np) < 320:
             return None, []

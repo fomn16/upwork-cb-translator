@@ -18,6 +18,7 @@ import numpy as np
 from config.video_config import *
 from config.translation_config import *
 from config.connection_config import *
+from config.audio_config import *
 
 from lipsync_communication import *
 
@@ -132,7 +133,7 @@ def process_translation_chunk(
     tensor_to_bytes=None,
     resample_audio=None,
     save_to_wav=None,
-    input_sr: int = 48000,
+    input_sr: int = EXTERNAL_SAMPLERATE,
     target_sr: int = 16000,
     video_frames_storage=None,
     session_id=None
@@ -176,7 +177,7 @@ def process_translation_chunk(
 
                         clone_tensor = request_voice_clone(seg.content)
                         cloned_audio_bytes = tensor_to_bytes(clone_tensor)
-                        translated_audio_bytes = resample_audio(cloned_audio_bytes, 22050, 48000)
+                        translated_audio_bytes = resample_audio(cloned_audio_bytes, 22050, EXTERNAL_SAMPLERATE)
 
                         if save_to_wav:
                             save_to_wav(translated_audio_bytes)
@@ -216,7 +217,7 @@ def process_translation_chunk(
 
 # ----------------- Utilities ----------------- #
 # Saves the bytes to a wav file on disk for debugging
-def save_to_wav(audio_bytes: bytes, sample_rate=48000, num_channels=2, sample_width=2):
+def save_to_wav(audio_bytes: bytes, sample_rate=EXTERNAL_SAMPLERATE, num_channels=2, sample_width=2):
     os.makedirs("recordings", exist_ok=True)
     filename = f"recordings/output_{int(time.time() * 1000)}.wav"
     with wave.open(filename, "wb") as wf:
@@ -269,7 +270,7 @@ def run_ffmpeg_input(sdp_path):
             "-c:a",
             "pcm_s16le",
             "-ar",
-            "48000",
+            str(EXTERNAL_SAMPLERATE),
             "-ac",
             "2",
             "-f",
@@ -278,7 +279,7 @@ def run_ffmpeg_input(sdp_path):
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        bufsize=SAMPLE_READ_SIZE
+        bufsize=N_AUDIO_CHUNK_SAMPLES
     )
 
 # Creates pipe that writes to the destination RTP endpoint
@@ -289,7 +290,7 @@ def run_ffmpeg_output(target_ip: str, target_port: int, payload_type: int, ssrc:
         "-f",
         "s16le",
         "-ar",
-        "48000",
+        str(EXTERNAL_SAMPLERATE),
         "-ac",
         "2",
         "-i",
@@ -299,7 +300,7 @@ def run_ffmpeg_output(target_ip: str, target_port: int, payload_type: int, ssrc:
         "-application", "lowdelay",   # low-latency Opus mode
         "-frame_duration", "20",      # 20 ms frames (try 10 for even lower latency)
         "-packet_loss", "0",          # no extra buffering for PLC
-        "-b:a", "64k",                 # bitrate (adjust as needed)
+        "-b:a", "64k",                # bitrate (adjust as needed)
         "-payload_type",
         str(payload_type),
         "-ssrc",
@@ -325,7 +326,7 @@ def print_ffmpeg_logs(proc, label):
 
 
 # Resamples and converts mono to stereo
-def resample_audio(audio_bytes, original_sr=16000, target_sr=48000):
+def resample_audio(audio_bytes, original_sr=16000, target_sr=EXTERNAL_SAMPLERATE):
     audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
     new_length = int(len(audio_data) * target_sr / original_sr)
     resampled = signal.resample(audio_data, new_length)

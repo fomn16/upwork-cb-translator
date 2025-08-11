@@ -30,5 +30,6 @@ class AudioQueue:
             self.data = self.data[size:]
             return dequeued_data
     
-    def length(self):
-        return len(self.data)
+    def __len__(self) -> int:
+        with self.lock:
+            return len(self.data)

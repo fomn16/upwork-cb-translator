@@ -62,7 +62,7 @@ class CommunicationHelper:
 
         self._recv_sock = self._ctx.socket(zmq.PULL)
         self._recv_callback = recv_callback
-        self._send_sock = self._ctx.socket(zmq.PUSH)
+        self._send_socks = []
 
         self._stop = threading.Event()
         self.online = True
@@ -79,7 +79,7 @@ class CommunicationHelper:
 
         if(send_port is not None):
             self.send_lock = threading.Lock()
-            self._send_sock.connect(send_addr)
+            self.send_addr = send_addr
         else:
             self.send_lock = None
 
@@ -95,6 +95,18 @@ class CommunicationHelper:
             else:
                 self._recv_loop()
 
+    def borrow_socket(self):
+        with self.send_lock:
+            if self._send_socks:
+                return self._send_socks.pop()
+            new_socket = self._ctx.socket(zmq.PUSH)
+            new_socket.connect(self.send_addr)
+            return new_socket
+
+    def return_socket(self, socket):
+        with self.send_lock:
+            self._send_socks.append(socket)
+
     def send(self, conn_id: str, payload: bytes) -> None:
         """
         Send a message as two frames: UTF-8 string bytes + raw bytes.
@@ -107,8 +119,11 @@ class CommunicationHelper:
             raise TypeError("payload must be bytes-like")
 
         header = conn_id.encode(self._encoding, errors=self._errors)
-        with self.send_lock:
-            self._send_sock.send_multipart([header, bytes(payload)])
+        socket = self.borrow_socket()
+        try:
+            socket.send_multipart([header, bytes(payload)])
+        finally:
+            self.return_socket(socket)
 
     def close(self) -> None:
         """
@@ -123,8 +138,10 @@ class CommunicationHelper:
             self._thread.join(timeout=1.0)
         except Exception:
             pass
-        self._send_sock.close(linger=0)
         self._recv_sock.close(linger=0)
+        with self.send_lock():
+            for s in self._send_socks:
+                s.close(linger=0)
         # Do not terminate shared context here.
 
     def __enter__(self):

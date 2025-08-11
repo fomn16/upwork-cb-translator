@@ -4,9 +4,6 @@ if IS_PROD:
 else:
     MEDIASERVER_IP = "127.0.0.1"
 
-SAMPLE_READ_SIZE = 4096  # minimum number of bytes read from the audio buffers/arrays
-OUTPUT_PERIOD = 0.02  # defines frequency at which output is written to the network
-
 MAIN_ENDPOINT_PORT=2002
 
 LIP_SYNC_RAW_AUDIO_IN_PORT = 6005
