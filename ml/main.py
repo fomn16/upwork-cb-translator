@@ -453,8 +453,6 @@ async def initiate_translation(data: TranslationRequest):
         target=print_ffmpeg_logs, args=(ff_out, "FFmpeg-OUT"), daemon=True
     ).start()
 
-    segment_size = int(sample_rate * 2 * 2 * 0.02) #20 ms segments
-
     # target_lang = data.targetLang
     target_lang = "eng"
     # manually enter the language code here
@@ -464,7 +462,7 @@ async def initiate_translation(data: TranslationRequest):
         args=(
             ff_in,
             ff_out,
-            segment_size,
+            N_AUDIO_CHUNK_BYTES,
             sample_rate,
             sdp_path,
             system,

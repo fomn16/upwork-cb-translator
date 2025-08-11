@@ -1,35 +1,57 @@
 import threading
 import time
+from collections import deque
 
-# ----------------- AudioQueue ----------------- #
-# class responsible for handling the queue used for audio with thread safety
 class AudioQueue:
     def __init__(self):
-        self.data = bytearray()  # Array that stores the audio queue
-        self.lock = threading.Lock()  # Lock used to control access between threads
-        self.closed = False  # Indicates when the process must be stopped
-        self.timeout_seconds = 10 * 60  # Stops the threads after 10 min of inactivity
-        self.last_write = time.perf_counter()  # Saves last enqueue time
+        self.queue = deque()  # store chunks of bytes
+        self.lock = threading.Lock()
+        self.not_empty = threading.Condition(self.lock)
+        self.closed = False
+        self.timeout_seconds = 10 * 60
+        self.last_write = time.perf_counter()
+        self.total_bytes = 0  # track total size without recomputing
 
-    # Appends new data to the queue
     def enqueue(self, new_data: bytes):
-        with self.lock:
-            self.data.extend(new_data)
+        with self.not_empty:
+            self.queue.append(new_data)
+            self.total_bytes += len(new_data)
             self.last_write = time.perf_counter()
+            self.not_empty.notify()  # wake up consumer if waiting
 
-    # Reads and removes the specified number of bytes from the queue
-    def dequeue(self, size = -1):
-        with self.lock:
+    def dequeue(self, size=-1, block=True, timeout=None):
+        with self.not_empty:
+            # Wait until data is available or closed
+            if block:
+                if not self.not_empty.wait_for(lambda: self.total_bytes > 0 or self.closed, timeout):
+                    return b""
+
             if time.perf_counter() - self.last_write > self.timeout_seconds:
                 self.closed = True
-            if len(self.data) == 0:
+
+            if self.total_bytes == 0:
                 return b""
-            if size > len(self.data) or size < 0:
-                size = len(self.data)
-            dequeued_data = self.data[:size]
-            self.data = self.data[size:]
-            return dequeued_data
-    
-    def __len__(self) -> int:
+
+            if size < 0 or size > self.total_bytes:
+                size = self.total_bytes
+
+            chunks = []
+            remaining = size
+            while remaining > 0 and self.queue:
+                chunk = self.queue[0]
+                if len(chunk) <= remaining:
+                    chunks.append(chunk)
+                    self.queue.popleft()
+                    self.total_bytes -= len(chunk)
+                    remaining -= len(chunk)
+                else:
+                    chunks.append(chunk[:remaining])
+                    self.queue[0] = chunk[remaining:]
+                    self.total_bytes -= remaining
+                    remaining = 0
+
+            return b"".join(chunks)
+
+    def __len__(self):
         with self.lock:
-            return len(self.data)
+            return self.total_bytes

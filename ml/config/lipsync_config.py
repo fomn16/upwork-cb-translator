@@ -1,6 +1,6 @@
 MINIMUM_AUDIO_BUFFER_SIZE_SECONDS = 0.1     # minimum size for input buffer
 AUDIO_QUEUE_HISTORY_SIZE = 100              # store max length of the audio queue after the last 100 appends
 MAX_VIDEO_SPEED_CHANGE = 0.15               # video cannot be sped up or slowed down more than 15%
-FACE_DETECT_FRAME_SKIP = 15                 # runs face detection once every 15 received frames
+FACE_DETECT_FRAME_SKIP = 5                  # runs face detection once every 15 received frames
 
 OUTPUT_QUEUE_SIZE_SECONDS = 1
