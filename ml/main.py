@@ -3,230 +3,20 @@ import tempfile
 import subprocess
 from subprocess import Popen
 import threading
-import time
-import time
 import numpy as np
-from scipy import signal
 from fastapi import FastAPI
 from pydantic import BaseModel
-import wave
 import uvicorn
 import uuid
-
-import numpy as np
+import torch
+import torchaudio
 
 from config.video_config import *
 from config.translation_config import *
 from config.connection_config import *
 from config.audio_config import *
 
-from lipsync_communication import *
-
-seamlessm4t = 0
-if ENABLE_TRANSLATION:
-    seamless_streaming = 1
-else:
-    seamless_streaming = 0
-
-# from lib.streaming_translator_utils import SAMPLE_RATE, StatelessBytesTranslator
-# translator1 = StatelessBytesTranslator(tgt_lang="hin")  # Hindi output
-# start the voice clone
-from multiprocessing.connection import Client
-
-def request_voice_clone(audio):
-    address = ("localhost", 6000)
-    conn = Client(address, authkey=b"secret_vc")
-    conn.send(audio)
-    result = conn.recv()
-    conn.close()
-    return result
-
-if seamless_streaming == 1:  # %%
-
-    from lib.seamless.seamless_streaming_utils import (
-        OutputSegments,
-        reset_states,
-        get_audio_bytes,
-        build_streaming_system,
-        bytes_to_float32_mono_array,
-    )
-
-    from seamless_communication.streaming.agents.seamless_streaming_s2st import (
-        SeamlessStreamingS2STJointVADAgent,
-    )
-    from simuleval.data.segments import SpeechSegment, TextSegment
-
-    agent_class = SeamlessStreamingS2STJointVADAgent
-    tgt_lang = "hin"
-
-    model_configs = dict(
-        source_segment_size=320,
-        device="cuda:0",
-        dtype="fp16",
-        min_starting_wait_w2vbert=192,
-        decision_threshold=0.5,
-        min_unit_chunk_size=50,
-        no_early_stop=True,
-        max_len_a=0,
-        max_len_b=100,
-        task="s2st",
-        tgt_lang=tgt_lang,
-        block_ngrams=True,
-        detokenize_only=True,
-    )
-
-    system = build_streaming_system(model_configs, agent_class)
-    print("✅ System ready.")
-
-
-import pickle
-def request_lipsync_in_worker(frame_buffer, audio_bytes, output_path):
-    address = ('localhost', 6006)
-    authkey = b'secret'
-
-    with Client(address, authkey=authkey) as conn:
-        data = pickle.dumps((frame_buffer, audio_bytes, output_path))
-        conn.send_bytes(data)
-        no_audio_path, final_path, error = conn.recv()
-        if error:
-            raise RuntimeError(f"Lip sync failed: {error}")
-        return no_audio_path, final_path
-
-
-import webrtcvad
-import noisereduce as nr
-
-vad = webrtcvad.Vad(1)  # Aggressiveness level
-
-def float32_to_pcm16(audio_float):
-    import numpy as np
-    audio_int16 = np.clip(audio_float * 32767, -32768, 32767).astype(np.int16)
-    return audio_int16.tobytes()
-
-def is_voiced_float32(audio_float, sample_rate=16000, check_ms=300, frame_ms=30):
-    pcm_bytes = float32_to_pcm16(audio_float)
-    frame_size = int(sample_rate * frame_ms / 1000) * 2  # 2 bytes per sample
-    max_bytes_to_check = int(sample_rate * check_ms / 1000) * 2
-
-    for i in range(0, min(len(pcm_bytes), max_bytes_to_check), frame_size):
-        frame = pcm_bytes[i:i + frame_size]
-        if len(frame) < frame_size:
-            break
-        if vad.is_speech(frame, sample_rate):
-            return True
-    return False
-
-def timed_is_voiced(float_audio, sample_rate=16000):
-    start_time = time.perf_counter()
-    result = is_voiced_float32(float_audio, sample_rate)
-    elapsed_ms = (time.perf_counter() - start_time) * 1000  # milliseconds
-    return result, elapsed_ms
-
-def process_translation_chunk(
-    audio_chunk: bytes,
-    target_lang: str,
-    system,
-    system_states,
-    output_queue,
-    voice_clone_enabled: bool = False,
-    request_voice_clone=None,
-    tensor_to_bytes=None,
-    resample_audio=None,
-    save_to_wav=None,
-    input_sr: int = EXTERNAL_SAMPLERATE,
-    target_sr: int = 16000,
-    video_frames_storage=None,
-    session_id=None
-):
-    # Convert bytes to float32 mono
-    float_audio = bytes_to_float32_mono_array(audio_chunk, input_sr=input_sr, target_sr=target_sr)
-
-    # Optional: Noise reduction
-    clean_chunk = nr.reduce_noise(y=float_audio, sr=target_sr)
-
-    # Handle stereo manually if upstream bytes_to_float32_mono_array doesn't already do it
-    if clean_chunk.ndim == 2:
-        clean_chunk = clean_chunk.mean(axis=0)
-
-    # Clip extremely large chunks (safety for Seamless model)
-    MAX_SAMPLES = target_sr * 2  # e.g., 2 seconds max
-    if clean_chunk.shape[-1] > MAX_SAMPLES:
-        clean_chunk = clean_chunk[-MAX_SAMPLES:]
-
-    # Ensure valid float32 values
-    clean_chunk = np.nan_to_num(clean_chunk).astype(np.float32)
-
-    # Run VAD
-    is_speech, vad_latency_ms = timed_is_voiced(clean_chunk, sample_rate=target_sr)
-    print(f"VAD latency: {vad_latency_ms:.4f} s")
-
-    if is_speech:
-        try:
-            input_segment = SpeechSegment(content=clean_chunk, sample_rate=target_sr)
-            input_segment.tgt_lang = target_lang
-
-            output_segments = OutputSegments(system.pushpop(input_segment, system_states))
-
-            for seg in output_segments.segments:
-                if isinstance(seg, SpeechSegment) and seg.sample_rate > 1:
-                    print("✅ audio_segment")
-
-                    if voice_clone_enabled:
-                        assert request_voice_clone and tensor_to_bytes and resample_audio, \
-                            "Voice cloning functions must be provided."
-
-                        clone_tensor = request_voice_clone(seg.content)
-                        cloned_audio_bytes = tensor_to_bytes(clone_tensor)
-                        translated_audio_bytes = resample_audio(cloned_audio_bytes, 22050, EXTERNAL_SAMPLERATE)
-
-                        if save_to_wav:
-                            save_to_wav(translated_audio_bytes)
-                    else:
-                        translated_audio_bytes = get_audio_bytes(seg.content, seg.sample_rate)
-
-                        # Optional: Lip sync if frames exist
-                        video_frames = video_frames_storage.pop(session_id, None)
-                        lip_syn_enabled = False
-                        if lip_syn_enabled and video_frames:
-                            print(f"Lip sync started on {len(video_frames)} frames")
-                            start_time = time.time()
-                            _, final_vid = request_lipsync_in_worker(
-                                video_frames,
-                                translated_audio_bytes,
-                                f"output_{time.time()}.mp4"
-                            )
-                            print(f"🕒 Lip sync time: {(time.time() - start_time):.4f}s")
-
-                    output_queue.enqueue(translated_audio_bytes)
-
-                elif isinstance(seg, TextSegment):
-                    print(f"📝 Translated text: {seg.content}")
-
-            # Handle utterance end
-            if output_segments.finished:
-                time.sleep(0.3)
-                print("⏹️ Utterance ended. Resetting...")
-                reset_states(system, system_states)
-
-        except Exception as e:
-            print(f"❗ Error during pushpop: {str(e)}. Resetting system state.")
-            reset_states(system, system_states)
-    else:
-        print("🔇 No speech detected. Skipping...")
-        reset_states(system, system_states)
-
-# ----------------- Utilities ----------------- #
-# Saves the bytes to a wav file on disk for debugging
-def save_to_wav(audio_bytes: bytes, sample_rate=EXTERNAL_SAMPLERATE, num_channels=2, sample_width=2):
-    os.makedirs("recordings", exist_ok=True)
-    filename = f"recordings/output_{int(time.time() * 1000)}.wav"
-    with wave.open(filename, "wb") as wf:
-        wf.setnchannels(num_channels)
-        wf.setsampwidth(sample_width)
-        wf.setframerate(sample_rate)
-        wf.writeframes(audio_bytes)
-    print(f"💾 Saved audio segment to {filename}")
-
+from socket_communication import *
 
 # Initializes the file used to read input from the network
 def write_sdp_file(payload_type, codec_name, clock_rate, channels, rtp_port):
@@ -279,7 +69,7 @@ def run_ffmpeg_input(sdp_path):
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        bufsize=N_AUDIO_CHUNK_SAMPLES
+        bufsize=EXTERNAL_N_AUDIO_CHUNK_SAMPLES
     )
 
 # Creates pipe that writes to the destination RTP endpoint
@@ -287,26 +77,20 @@ def run_ffmpeg_output(target_ip: str, target_port: int, payload_type: int, ssrc:
     cmd = [
         "ffmpeg",
         "-nostdin",
-        "-f",
-        "s16le",
-        "-ar",
-        str(EXTERNAL_SAMPLERATE),
-        "-ac",
-        "2",
-        "-i",
-        "pipe:0",
-        "-c:a",
-        "libopus",
-        "-application", "lowdelay",   # low-latency Opus mode
-        "-frame_duration", "20",      # 20 ms frames (try 10 for even lower latency)
-        "-packet_loss", "0",          # no extra buffering for PLC
-        "-b:a", "64k",                # bitrate (adjust as needed)
-        "-payload_type",
-        str(payload_type),
-        "-ssrc",
-        str(ssrc),
-        "-f",
-        "rtp",
+        "-f", "s16le",
+        "-ar", "16000",          # input sample rate
+        "-ac", "1",              # input channels (mono)
+        "-i", "pipe:0",
+        "-ar", str(EXTERNAL_SAMPLERATE),  # output sample rate
+        "-ac", "2",              # output channels (stereo)
+        "-c:a", "libopus",
+        "-application", "lowdelay",
+        "-frame_duration", "20",
+        "-packet_loss", "0",
+        "-b:a", "64k",
+        "-payload_type", str(payload_type),
+        "-ssrc", str(ssrc),
+        "-f", "rtp",
         f"rtp://{target_ip}:{target_port}?pkt_size=1200&buffer_size=65536",
     ]
     return subprocess.Popen(
@@ -324,78 +108,71 @@ def print_ffmpeg_logs(proc, label):
         if "error" in text.lower():
             print(f"{label}: {text}")
 
+def to_internal_format(
+    seg: bytes,
+    orig_rate: int,
+    target_rate: int = 16000,
+    num_ch: int = 2
+) -> bytes:
+    """
+    Convert raw PCM16-LE bytes from FFmpeg to PCM16-LE mono at target_rate
 
-# Resamples and converts mono to stereo
-def resample_audio(audio_bytes, original_sr=16000, target_sr=EXTERNAL_SAMPLERATE):
-    audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-    new_length = int(len(audio_data) * target_sr / original_sr)
-    resampled = signal.resample(audio_data, new_length)
-    resampled = np.clip(resampled, -32768, 32767).astype(np.int16)
-    stereo_data = np.column_stack((resampled, resampled)).flatten()
-    return stereo_data.tobytes()
+    Args:
+        seg: Raw PCM16-LE bytes (interleaved channels).
+        orig_rate: Original sample rate (EXTERNAL_SAMPLERATE from FFmpeg).
+        target_rate: Desired output sample rate (default 16kHz).
+        num_ch: Number of channels in seg (default 2 for stereo).
 
+    Returns:
+        bytes: Processed PCM16-LE mono audio at target_rate.
+    """
+    # Convert bytes to torch tensor (int16)
+    dtype_in = np.dtype('<i2')  # little-endian int16
+    audio_np = np.frombuffer(seg, dtype=dtype_in)
 
-# Converts a numpy tensor to raw PCM bytes
-def tensor_to_bytes(translated_wav):
-    audio_np = np.clip(np.array(translated_wav, dtype=np.float32), -1.0, 1.0)
-    audio_int16 = (audio_np * 32767).astype(np.int16)
-    return audio_int16.tobytes()
+    # Reshape to (channels, samples)
+    audio_np = audio_np.reshape(-1, num_ch).T  # shape: (num_ch, num_samples)
+    audio_tensor = torch.from_numpy(audio_np.astype(np.float32))
 
+    # Normalize to [-1, 1]
+    audio_tensor /= np.iinfo(np.int16).max
+
+    # Downmix to mono if needed
+    if num_ch > 1:
+        audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
+
+    # Resample if needed
+    if orig_rate != target_rate:
+        resampler = torchaudio.transforms.Resample(
+            orig_freq=orig_rate, new_freq=target_rate
+        )
+        audio_tensor = resampler(audio_tensor)
+
+    # Convert back to int16 PCM
+    audio_tensor = (audio_tensor * np.iinfo(np.int16).max).clamp(
+        min=np.iinfo(np.int16).min, max=np.iinfo(np.int16).max
+    ).short()
+
+    # Return as bytes (interleaved mono)
+    return audio_tensor.squeeze(0).numpy().tobytes()
 
 # Function that reads from the input pipe, processes audio, and enqueues to output
 def pump_audio(
     ff_in: Popen,
     ff_out: Popen,
     segment_size: int,
-    sample_rate: int,
     sdp_path: str,
-    system,
-    system_states,
-    target_lang,
     session_id: str,
 ):
-    global lipsync_translated_audio_socket, lipsync_raw_audio_socket
     try:
         while True:
             seg = ff_in.stdout.read(segment_size)
             if not seg:
                 print("empty chunk, stopping")
                 break
-            lipsync_translated_audio_socket.send(session_id, seg)
-            lipsync_raw_audio_socket.send(session_id, seg)
-
-            '''buf.extend(chunk)  # O(1) append
-
-            while len(buf) >= segment_size:
-                seg = bytes(buf[:segment_size])  # make immutable for sending
-                del buf[:segment_size]           # remove from front in O(1)
-                #focusing on setting up the lipsync pipeline
-                if seamless_streaming == 1:
-                    process_translation_chunk(
-                        seg,
-                        target_lang=target_lang,
-                        system=system,
-                        system_states=system_states,
-                        output_queue=output_queue,
-                        voice_clone_enabled=False,
-                        request_voice_clone=request_voice_clone,
-                        tensor_to_bytes=tensor_to_bytes,
-                        resample_audio=resample_audio,
-                        save_to_wav=save_to_wav,
-                        video_frames_storage=video_frames_storage
-                    )
-                    #################################################
-                else:
-                    video_frames = video_frames_storage.pop(session_id, None)
-                    print(
-                        f"🟩 Processing video and audio segment for session {session_id}... {chunk_count}"
-                        + (
-                            f", video frames: {len(video_frames)}"
-                            if video_frames is not None
-                            else ", no video frames found."
-                        )
-                    )
-                    output_queue.enqueue(seg)'''
+            seg_converted = to_internal_format(seg, EXTERNAL_SAMPLERATE)
+            #lipsync_raw_audio_socket.send(session_id, seg)
+            translate_socket.send(session_id, seg_converted)
     finally:
         ff_in.stdout.close()
         ff_out.stdin.close()
@@ -426,12 +203,6 @@ async def initiate_translation(data: TranslationRequest):
     print("📥 Received translation initiation:", data.dict())
     sample_rate = data.clockRate
 
-    if ENABLE_TRANSLATION:
-        system_states = system.build_states()
-    else:
-        system_states = None
-        system = None
-
     # Sets up the read file from the rtp port provided by the client
     sdp_path = write_sdp_file(
         payload_type=data.payloadType,
@@ -452,9 +223,7 @@ async def initiate_translation(data: TranslationRequest):
     threading.Thread(
         target=print_ffmpeg_logs, args=(ff_out, "FFmpeg-OUT"), daemon=True
     ).start()
-
-    # target_lang = data.targetLang
-    target_lang = "eng"
+    
     # manually enter the language code here
     # Create thread to process audio
     threading.Thread(
@@ -462,12 +231,8 @@ async def initiate_translation(data: TranslationRequest):
         args=(
             ff_in,
             ff_out,
-            N_AUDIO_CHUNK_BYTES,
-            sample_rate,
+            EXTERNAL_N_AUDIO_CHUNK_BYTES,
             sdp_path,
-            system,
-            system_states,
-            target_lang,
             data.sessionId,
         ),
         daemon=True,

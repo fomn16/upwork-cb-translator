@@ -3,4 +3,5 @@ AUDIO_QUEUE_HISTORY_SIZE = 100              # store max length of the audio queu
 MAX_VIDEO_SPEED_CHANGE = 0.15               # video cannot be sped up or slowed down more than 15%
 FACE_DETECT_FRAME_SKIP = 5                  # runs face detection once every 15 received frames
 
-OUTPUT_QUEUE_SIZE_SECONDS = 1
+OUTPUT_QUEUE_SIZE_SECONDS = 1               # size of the output queue, should be greater than the time it takes to process one lipsync chunk
+LIPSYNC_MODEL_CHUNK_SECONDS = 1             # ammount of time passed in each call to the lipsync model

@@ -5,6 +5,7 @@ from config.connection_config import *
 
 audio_out_pipes: Dict[int, Popen[bytes]]= {}
 video_out_pipes: Dict[int, Popen[bytes]]= {}
+
 def receive_synced_audio(session_id:int, audio_bytes:bytes):
     global audio_out_pipes
     if session_id not in audio_out_pipes:
@@ -29,7 +30,11 @@ def receive_synced_video(session_id:int, video_bytes:bytes):
     except BrokenPipeError:
         print("⚠️ FFmpeg-video-out pipe closed")
         return
-    
+ 
 lipsync_raw_audio_socket = CommunicationHelper("lipsync_raw_audio_socket", None, LIP_SYNC_RAW_AUDIO_IN_PORT, None)
 lipsync_translated_audio_socket = CommunicationHelper("lipsync_translated_audio_socket", LIP_SYNC_AUDIO_OUT_PORT, LIP_SYNC_TRANSLATED_AUDIO_IN_PORT, receive_synced_audio)
 lipsync_video_socket = CommunicationHelper("lipsync_video_socket", LIP_SYNC_VIDEO_OUT_PORT, LIP_SYNC_VIDEO_IN_PORT, receive_synced_video)
+
+def receive_translated_audio(session_id:int, audio_bytes:bytes):
+    lipsync_translated_audio_socket.send(session_id, audio_bytes)
+translate_socket = CommunicationHelper("audio_translate_socket", TRANSLATION_VOICE_CLONE_OUT_PORT, TRANSLATION_VOICE_CLONE_IN_PORT, receive_translated_audio)

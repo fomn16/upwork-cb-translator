@@ -23,32 +23,11 @@ from collections import deque
 
 from helpers import *
 
-# histogram with fast max lookup
-class MaxAudioQueueSizeHistory:
-    def __init__(self):
-        self.queue = deque()
-        self.max_deque = deque()
-
-    def push(self, value):
-        self.queue.append(value)
-        if len(self.queue) > AUDIO_QUEUE_HISTORY_SIZE:
-            removed = self.queue.popleft()
-            if removed == self.max_deque[0]:
-                self.max_deque.popleft()
-
-        while self.max_deque and self.max_deque[-1] < value:
-            self.max_deque.pop()
-        self.max_deque.append(value)
-
-    def get_max(self):
-        return self.max_deque[0] if self.max_deque else MINIMUM_AUDIO_BUFFER_SIZE_SECONDS * EXTERNAL_SAMPLERATE
-
-class LipSyncManager:
-    def __init__(self, audio_in: AudioQueue, video_in: VideoQueue):
-        self.translated_audio = audio_in
-        self.video = video_in
-        self.audio_len_history = MaxAudioQueueSizeHistory()
-        self.video_speed_change = 0
+# used to avoid calculating every time
+VIDEO_INPUT_BUFFER_SIZE = LIPSYNC_MODEL_CHUNK_SECONDS*FRAME_RATE
+VIDEO_OUTPUT_BUFFER_SIZE = OUTPUT_QUEUE_SIZE_SECONDS*FRAME_RATE
+AUDIO_INPUT_BUFFER_SIZE = LIPSYNC_MODEL_CHUNK_SECONDS*INTERNAL_SAMPLERATE*2 # *2 because audio queue is in bytes, but we are working with 16 bit samples (2 bytes)
+AUDIO_OUTPUT_BUFFER_SIZE = OUTPUT_QUEUE_SIZE_SECONDS*INTERNAL_SAMPLERATE*2
 
 class Session:
     def __init__(self, session_id:str):
@@ -58,7 +37,6 @@ class Session:
         self.raw_audio_in = AudioQueue()
 
         self.translated_audio_in = AudioQueue()
-        self.translated_audio_size_history = MaxAudioQueueSizeHistory()
 
         self.video_in = VideoQueue()
         self.face_positions = FaceDetectProcessor()
@@ -67,7 +45,6 @@ class Session:
 
         self.audio_out = AudioQueue()
         self.video_out = VideoQueue()
-        self.input_queue_primed = False
 
         threading.Thread(
             target=self.process,
@@ -92,8 +69,6 @@ class Session:
 
     def add_translated_audio(self, audio_bytes):
         self.translated_audio_in.enqueue(audio_bytes)
-        self.translated_audio_size_history.push(len(self.translated_audio_in))
-        self.received_data.set()
 
     def add_video(self, video_bytes):
         frame = np.frombuffer(video_bytes, np.uint8).reshape((FRAME_HEIGHT,FRAME_WIDTH, 3))
@@ -117,20 +92,22 @@ class Session:
                 if(timeout):
                     continue # if woke up due to timeout, goes to the next loop iteration
 
-                # TODO, simple passthrough for now
-                audio_seg = self.translated_audio_in.dequeue(N_AUDIO_CHUNK_SAMPLES)
-                if audio_seg:
-                    self.audio_out.enqueue(audio_seg)
+                if len(self.video_in) >= VIDEO_INPUT_BUFFER_SIZE: # waits untill there is enough video buffered on the input
+                    video_frame = self.video_in.dequeue()
+                    if video_frame is not None and getattr(video_frame, "size", 0) > 0:
+                        # Make a writable copy
+                        video_frame = video_frame.copy()
+                        f = self.face_positions.dequeue()
+                        if f is not None:
+                            x1, y1, x2, y2 = f
+                            cv2.rectangle(video_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        video_socket.send(self.session_id, video_frame.tobytes(order="C"))#self.video_out.enqueue(video_frame)
 
-                video_frame = self.video_in.dequeue()
-                if video_frame is not None and getattr(video_frame, "size", 0) > 0:
-                    # Make a writable copy
-                    video_frame = video_frame.copy()
-                    f = self.face_positions.dequeue()
-                    if f is not None:
-                        x1, y1, x2, y2 = f
-                        cv2.rectangle(video_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    self.video_out.enqueue(video_frame)
+                audio_size = len(self.translated_audio_in)
+                if audio_size >= AUDIO_INPUT_BUFFER_SIZE:
+                    audio_seg = self.translated_audio_in.dequeue(audio_size-AUDIO_INPUT_BUFFER_SIZE)
+                    if audio_seg:
+                        translated_audio_socket.send(self.session_id, audio_seg)#self.audio_out.enqueue(audio_seg)
 
         except Exception as e:
             print(f"Error in processing thread: {e}")
@@ -142,58 +119,63 @@ class Session:
         global translated_audio_socket
         while True: # waits for output queue to be filled before starting to return data
             time.sleep(AUDIO_CHUNK_DURATION)
-            if len(self.audio_out)/EXTERNAL_SAMPLERATE >= 2*2*OUTPUT_QUEUE_SIZE_SECONDS: # 2*2 because audio_out is in bytes, but we are working with 16 bit (2 bytes) stereo (2 channels)
+            if len(self.audio_out) >= AUDIO_OUTPUT_BUFFER_SIZE:
                 break
-        print("send_audio -> has data to start!")
+        print("audio output has enough data to start streaming")
 
-        next_frame_time = time.perf_counter()
-        i = 0
+        start_time = time.perf_counter()
+        frame_index = 0
+        
         while not self.closed:
-            i +=1
-            if(i==100):
-                print(len(self.audio_out), len(self.video_out))
-                i = 0
-            audio = self.audio_out.dequeue(2*2*N_AUDIO_CHUNK_SAMPLES) #2*2 for the same reason as above
+            target_time = start_time + frame_index * AUDIO_CHUNK_DURATION
+            frame_index += 1
+
+            audio = self.audio_out.dequeue(INTERNAL_N_AUDIO_CHUNK_BYTES*2)
             if audio:
                 translated_audio_socket.send(self.session_id, audio)
 
-            # Schedule next frame time
-            next_frame_time += AUDIO_CHUNK_DURATION
-            sleep_time = next_frame_time - time.perf_counter()
-            if len(self.audio_out)/EXTERNAL_SAMPLERATE >= 2*2*OUTPUT_QUEUE_SIZE_SECONDS:
-                sleep_time-=0.1# slightly speed up if we are running late on the sends (queue is increasing)
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            else:
-                # We're running late — skip sleep to catch up
-                next_frame_time = time.perf_counter()
+            sleep_time = target_time - time.perf_counter()
+
+            # Slight speed-up if buffer is too full
+            if len(self.audio_out) >= AUDIO_OUTPUT_BUFFER_SIZE:
+                sleep_time *= 0.8
+
+            if sleep_time > 0.002:
+                time.sleep(sleep_time - 0.002)  # sleep most of the time
+            while time.perf_counter() < target_time:
+                pass  # busy-wait for final precision
 
     def send_video_data(self):
         global video_socket
         time_per_video_send = 1/FRAME_RATE
         while True: # waits for output queue to be filled before starting to return data
             time.sleep(time_per_video_send)
-            if len(self.video_out)/FRAME_RATE >= OUTPUT_QUEUE_SIZE_SECONDS:
+            if len(self.video_out) >= VIDEO_OUTPUT_BUFFER_SIZE:
                 break
-        print("send_video -> has data to start!")
-        next_frame_time = time.perf_counter()
+        print("video output has enough data to start streaming")
+
+        start_time = time.perf_counter()
+        frame_index = 0
+
         while not self.closed:
+            target_time = start_time + frame_index * time_per_video_send
+            frame_index += 1
+
             frame = self.video_out.dequeue()
             if frame is not None and getattr(frame, "size", 0) > 0:
-                frame_to_send = frame  # update only if we have a new frame
+                video_socket.send(self.session_id, frame.tobytes(order="C"))
 
-            video_socket.send(self.session_id, frame_to_send.tobytes(order="C"))
+            sleep_time = target_time - time.perf_counter()
 
-            # Schedule next frame time
-            next_frame_time += time_per_video_send
-            sleep_time = next_frame_time - time.perf_counter()
-            if len(self.video_out)/FRAME_RATE > OUTPUT_QUEUE_SIZE_SECONDS:
-                sleep_time-=0.1 # slightly speed up if we are running late on the sends (queue is increasing)
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            else:
-                # We're running late — skip sleep to catch up
-                next_frame_time = time.perf_counter()
+            # Slight speed-up if buffer is too full
+            if len(self.video_out) > VIDEO_OUTPUT_BUFFER_SIZE:
+                sleep_time *= 0.9
+
+            # Sleep most of the time, busy-wait for final precision
+            if sleep_time > 0.002:
+                time.sleep(sleep_time - 0.002)
+            while time.perf_counter() < target_time:
+                pass  # busy-wait for last microseconds
 
 class SessionManager:
     sessions_dict: Dict[str, Session] = {}

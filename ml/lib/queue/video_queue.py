@@ -11,6 +11,7 @@ class VideoQueue:
         self.closed = False
         self.timeout_seconds = timeout_seconds
         self.last_write = time.perf_counter()
+        self.n_stored_frames = 0
 
     def _mark_closed_if_idle(self) -> None:
         if time.perf_counter() - self.last_write > self.timeout_seconds:
@@ -29,12 +30,14 @@ class VideoQueue:
         with self.lock:
             self.frames.append(frame)
             self.last_write = time.perf_counter()
+            self.n_stored_frames += 1
 
     def dequeue(self) -> Optional[np.ndarray]:
         with self.lock:
             self._mark_closed_if_idle()
             if not self.frames:
                 return None
+            self.n_stored_frames -= 1
             return self.frames.popleft()
 
     def peek(self) -> Optional[np.ndarray]:
@@ -46,7 +49,7 @@ class VideoQueue:
 
     def __len__(self) -> int:
         with self.lock:
-            return len(self.frames)
+            return self.n_stored_frames
 
     def close(self) -> None:
         with self.lock:

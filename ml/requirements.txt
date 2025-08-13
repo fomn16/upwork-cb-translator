@@ -1,6 +1,8 @@
-aiortc
-aiohttp_cors
-pydub
-torch
-gi
+numpy
+fastapi
+uvicorn
 zmq
+torch
+torchaudio
+
+scipy
