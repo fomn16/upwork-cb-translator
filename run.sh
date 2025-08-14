@@ -44,7 +44,17 @@ PIDS+=($!)
 
 sleep 0.1
 
-konsole --hold -e bash -c "source $CONDA_PATH && conda activate translation_pipeline && cd ml/pipelines/translation && export CUDA_HOME=/home/fomn/.conda/envs/translation_pipeline && export PATH=\$CUDA_HOME/bin:\$PATH && export LD_LIBRARY_PATH=\$CUDA_HOME/lib64:\$LD_LIBRARY_PATH && export LD_LIBRARY_PATH=\$CUDA_HOME/lib:\$LD_LIBRARY_PATH && export CC=/home/fomn/.conda/envs/env/bin/x86_64-conda-linux-gnu-gcc && export CXX=/home/fomn/.conda/envs/env/bin/x86_64-conda-linux-gnu-g++ && python main.py" &
+konsole --hold -e bash -c "source $CONDA_PATH && conda activate voice_clone && cd ml/pipelines/voice_clone && python main.py" &
+PIDS+=($!)
+
+sleep 0.1
+
+konsole --hold -e bash -c "source $CONDA_PATH && conda activate seamless_t2s && cd ml/pipelines/seamless_t2s && python main.py" &
+PIDS+=($!)
+
+sleep 0.1
+
+konsole --hold -e bash -c "source $CONDA_PATH && conda activate translation && cd ml/pipelines/translation && python main.py" &
 PIDS+=($!)
 
 sleep 1

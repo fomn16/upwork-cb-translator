@@ -93,7 +93,7 @@ model = load_model("wav2lip_Chinese.pth")
 # ✅ MODIFIED datagen (preserve original frame if no face)
 def datagen(frames, mels, face_det_results):
     img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
-    #print(len(frames), len(mels))
+    print('len frames vs len mels: ', len(frames), len(mels))
     for i, m in enumerate(mels):
         idx = 0 if args.static else i % len(frames)
         frame = frames[idx]
