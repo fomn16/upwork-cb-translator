@@ -91,17 +91,9 @@ def load_model(path):
 model = load_model("wav2lip_Chinese.pth")
 
 # ✅ MODIFIED datagen (preserve original frame if no face)
-def datagen(frames, mels):
+def datagen(frames, mels, face_det_results):
     img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
     #print(len(frames), len(mels))
-    if args.box[0] == -1:
-        print("face detection in data gen")
-        face_det_results = face_detect_many(frames if not args.static else [frames[0]])
-    else:
-        print('Using the specified bounding box...')
-        y1, y2, x1, x2 = args.box
-        face_det_results = [[x1, y1, x2, y2] for _ in frames]
-
     for i, m in enumerate(mels):
         idx = 0 if args.static else i % len(frames)
         frame = frames[idx]
@@ -154,27 +146,21 @@ def video_writer_worker(write_queue, output_path, frame_size, fps):
     writer.release()
 
 
-def run_lipsync_from_frames(frame_buffer: list, audio_bytes: bytes, output_path: str, with_audio=True, fps=250):
-
-    args.outfile = output_path
+def run_lipsync_from_frames(frame_buffer: list, audio_bytes: bytes, face_detect: list):
     full_frames = frame_buffer
-    fps = int(fps)
+    frames_output = []
     print(f"[stream] Received {len(full_frames)} frames")
 
     # === 1. Audio Preprocessing ===
     audio_start = time.time()
-    waveform, sample_rate = torchaudio.load(io.BytesIO(audio_bytes))
-    if waveform.shape[0] == 2:
-        waveform = waveform.mean(dim=0, keepdim=True)
-    if sample_rate != 16000:
-        waveform = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)(waveform)
-    wav = waveform.squeeze().cpu().numpy()
-    mel = audio.melspectrogram(wav)
+    waveform_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
+    waveform_float32 = waveform_int16.astype(np.float32) / 32768.0
+    mel = audio.melspectrogram(waveform_float32)
     print(f"[stream] Audio processed in {time.time() - audio_start:.2f}s")
 
     # === 2. Mel Chunks Creation ===
     mel_chunks, mel_step_size = [], 16
-    mel_idx_multiplier = 80. / fps
+    mel_idx_multiplier = 80. / FRAME_RATE
     i = 0
     while True:
         start_idx = int(i * mel_idx_multiplier)
@@ -193,16 +179,7 @@ def run_lipsync_from_frames(frame_buffer: list, audio_bytes: bytes, output_path:
         full_frames = full_frames[:len(mel_chunks)]
 
     # === 4. Prepare datagen ===
-    gen = datagen(full_frames.copy(), mel_chunks)
-
-    os.makedirs("temp", exist_ok=True)
-    no_audio_video_path = f"temp/result_{int(time.time())}.avi"
-    frame_h, frame_w = full_frames[0].shape[:2]
-
-    # === 5. Threaded Video Writer ===
-    write_queue = queue.Queue()
-    writer_thread = threading.Thread(target=video_writer_worker, args=(write_queue, no_audio_video_path, (frame_w, frame_h), fps))
-    writer_thread.start()
+    gen = datagen(full_frames.copy(), mel_chunks, face_detect)
 
     # === 6. Run Inference ===
     frames_written = 0
@@ -223,63 +200,27 @@ def run_lipsync_from_frames(frame_buffer: list, audio_bytes: bytes, output_path:
 
         for p, f, c in zip(pred, frames, coords):
             if c is None:
-                write_queue.put(f)
+                frames_output.append(f)
                 continue
             x1, y1, x2, y2 = c
             if x2 <= x1 or y2 <= y1:
-                write_queue.put(f)
+                frames_output.append(f)
                 continue
             try:
                 p = cv2.resize(p.astype(np.uint8), (x2 - x1, y2 - y1))
                 f[y1:y2, x1:x2] = cv2.addWeighted(f[y1:y2, x1:x2], 0.2, p, 0.8, 0)
             except Exception as e:
                 print(f"[warning] Error applying lipsync: {e}")
-            write_queue.put(f)
+            frames_output.append(f)
             frames_written += 1
 
     # === 7. Fallback if no frames written ===
     if frames_written == 0:
         print("⚠️ No processed frames. Writing fallback video with original frames.")
         for f in full_frames:
-            write_queue.put(f)
-
-    write_queue.put(None)
-    writer_thread.join()
-    print(f"[stream] Lip-synced video saved to {no_audio_video_path}")
-
-    # === 8. Mux Audio (if required) ===
-    final_output_path = args.outfile
-    if with_audio:
-        mux_start = time.time()
-        audio_wav_path = "temp/input_audio.wav"
-        with open(audio_wav_path, "wb") as f:
-            f.write(audio_bytes)
-
-        command = [
-            'ffmpeg', '-y',
-            '-i', no_audio_video_path,
-            '-i', audio_wav_path,
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-c:a', 'aac',
-            '-shortest',
-            final_output_path
-        ]
-        result = subprocess.run(command, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            print("❌ FFmpeg failed:")
-            print(result.stderr)
-        else:
-            print(f"[muxing] Audio+Video muxed in {time.time() - mux_start:.2f}s")
-
-        if not os.path.exists(final_output_path):
-            print("❌ Output file missing after muxing")
-            final_output_path = None
-        else:
-            print(f"✅ Output muxed video: {final_output_path}")
-
-    return no_audio_video_path, final_output_path
+            frames_output.append(f)
+    print(f"[stream] Lip-synced video created")
+    return frames_output
 
 '''  
 with Listener(address, authkey=authkey) as listener:

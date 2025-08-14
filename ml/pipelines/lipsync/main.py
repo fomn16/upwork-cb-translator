@@ -25,10 +25,12 @@ from collections import deque
 
 from helpers import *
 
+import math
+
 # used to avoid calculating every time
-VIDEO_INPUT_BUFFER_SIZE = LIPSYNC_MODEL_CHUNK_SECONDS*FRAME_RATE
+VIDEO_INPUT_BUFFER_SIZE = MAX_LIPSYNC_MODEL_CHUNK_SECONDS*FRAME_RATE
 VIDEO_OUTPUT_BUFFER_SIZE = OUTPUT_QUEUE_SIZE_SECONDS*FRAME_RATE
-AUDIO_INPUT_BUFFER_SIZE = LIPSYNC_MODEL_CHUNK_SECONDS*INTERNAL_SAMPLERATE*2 # *2 because audio queue is in bytes, but we are working with 16 bit samples (2 bytes)
+AUDIO_INPUT_BUFFER_SIZE = MAX_LIPSYNC_MODEL_CHUNK_SECONDS*INTERNAL_SAMPLERATE*2 # *2 because audio queue is in bytes, but we are working with 16 bit samples (2 bytes)
 AUDIO_OUTPUT_BUFFER_SIZE = OUTPUT_QUEUE_SIZE_SECONDS*INTERNAL_SAMPLERATE*2
 
 class Session:
@@ -92,22 +94,41 @@ class Session:
                     break
                 if(timeout):
                     continue # if woke up due to timeout, goes to the next loop iteration
-                if len(self.video_in) >= VIDEO_INPUT_BUFFER_SIZE: # waits untill there is enough video buffered on the input
-                    video_frame = self.video_in.dequeue()
-                    if video_frame is not None and getattr(video_frame, "size", 0) > 0:
-                        # Make a writable copy
-                        video_frame = video_frame.copy()
-                        f = self.face_positions.dequeue()
+
+                available_video_frames = len(self.video_in)
+                if available_video_frames >= VIDEO_INPUT_BUFFER_SIZE: # waits untill there is enough video buffered on the input
+                    available_audio_bytes = len(self.translated_audio_in)
+                    available_audio_time = available_audio_bytes/(2*INTERNAL_SAMPLERATE)
+                    if available_audio_time > MIN_LIPSYNC_MODEL_CHUNK_SECONDS: # if there is enough translated audio, applies lipsync
+                        available_video_time = available_video_frames/FRAME_RATE
+                        if (available_video_time < available_audio_time): # if there is more audio than video, processes MAX_LIPSYNC_MODEL_CHUNK_SECONDS, and leaves the rest for the next iteration
+                            video_frames_to_process = available_video_frames
+                            audio_bytes_to_process = math.floor(available_video_time*INTERNAL_SAMPLERATE)*2 # *2 is on the outside because we cannot process an even number of audio bytes (an audio sample is 2 bytes)
+                        else: # if there is more video than audio, processes the entire audio queue
+                            audio_bytes_to_process = available_audio_bytes
+                            video_frames_to_process = math.floor(available_video_time*FRAME_RATE)
+
+                        video_for_lipsync = []
+                        positions_for_lipsync = []
+                        for _ in range(video_frames_to_process):
+                            video_for_lipsync.append(self.video_in.dequeue().copy())
+                            positions_for_lipsync.append(self.face_positions.dequeue())
+                        audio_for_lipsync = self.translated_audio_in.dequeue(audio_bytes_to_process)
+
+                        synced_video = run_lipsync_from_frames(video_for_lipsync, audio_for_lipsync, positions_for_lipsync)
+
+                        for synced_video_frame in synced_video:
+                            self.video_out.enqueue(synced_video_frame)
+                        
+                        self.audio_out.enqueue(audio_for_lipsync)
+                        
+                    else:   # if we have no translated audio, sends the video back
+                        video_frame = self.video_in.dequeue().copy()
+                        f = self.face_positions.dequeue() # not really used, but we need to update the face positions queue state anyways
                         if f is not None:
                             x1, y1, x2, y2 = f
                             cv2.rectangle(video_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         self.video_out.enqueue(video_frame)
-
-                audio_size = len(self.translated_audio_in)
-                if audio_size >= AUDIO_INPUT_BUFFER_SIZE:
-                    audio_seg = self.translated_audio_in.dequeue(audio_size-AUDIO_INPUT_BUFFER_SIZE)
-                    if audio_seg:
-                        self.audio_out.enqueue(audio_seg)
 
         except Exception as e:
             print(f"Error in processing thread: {e}")
