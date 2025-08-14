@@ -10,7 +10,7 @@ from pipeline import TranscribePipe, TranslatePipe, TTSPipe, AudioOutPipe
 
 input_language = "en"
 output_language = "hi"
-voiceFile = "arnold_original.mp3"
+voiceFile = "felipe.wav"
 
 ################# adding hindi support to num2words (used by XTTS) using indic-num2words ################
 from pipelines.translation.custom_implementations.hin_nums2words import num_to_word as indic_num2words
@@ -91,7 +91,6 @@ def run_pipeline(conn):
     tts_pipe = TTSPipe(tts_iteration)
 
     def audio_out_iteration(output_bytes: bytes):
-        print("returning bytes")
         conn.send(output_bytes)
 
     output_pipe = AudioOutPipe(audio_out_iteration)

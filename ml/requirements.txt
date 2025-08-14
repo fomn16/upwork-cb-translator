@@ -1,8 +1,7 @@
-numpy
-fastapi
-uvicorn
-zmq
-torch
-torchaudio
-
-scipy
+numpy==2.2.6
+fastapi==0.116.1
+uvicorn==0.35.0
+zmq==0.0.0
+torch==2.8.0
+torchaudio==2.8.0
+scipy==1.15.3

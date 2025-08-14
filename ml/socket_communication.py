@@ -18,7 +18,7 @@ def receive_synced_audio(session_id:int, audio_bytes:bytes):
     except BrokenPipeError:
         print("⚠️ FFmpeg-audio-out pipe closed")
         return
-    
+
 def receive_synced_video(session_id:int, video_bytes:bytes):
     global video_out_pipes
     if session_id not in video_out_pipes:

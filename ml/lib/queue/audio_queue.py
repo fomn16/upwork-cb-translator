@@ -55,3 +55,7 @@ class AudioQueue:
     def __len__(self):
         with self.lock:
             return self.total_bytes
+        
+    def close(self):
+        with self.lock:
+            self.closed = True

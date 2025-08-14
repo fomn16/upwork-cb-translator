@@ -9,6 +9,8 @@ import threading
 import numpy as np
 import time
 
+import cv2
+
 from typing import Dict
 from lib.communication_helper import CommunicationHelper
 from lib.queue.audio_queue import AudioQueue
@@ -64,7 +66,6 @@ class Session:
     # raw audio is not used for now
     def add_raw_audio(self, audio_bytes):
         #self.raw_audio_in.enqueue(audio_bytes)
-        #self.received_data.set()
         pass
 
     def add_translated_audio(self, audio_bytes):
@@ -78,8 +79,8 @@ class Session:
 
     def close(self):
         self.closed = True
-        self.translated_audio_in.closed = True  # TODO, refactor to work the same way as the video queue
-        self.raw_audio_in.closed = True  # TODO, refactor to work the same way as the video queue
+        self.translated_audio_in.close()
+        self.raw_audio_in.close()
         self.video_in.close()
         self.face_positions.close()
 
@@ -91,7 +92,6 @@ class Session:
                     break
                 if(timeout):
                     continue # if woke up due to timeout, goes to the next loop iteration
-
                 if len(self.video_in) >= VIDEO_INPUT_BUFFER_SIZE: # waits untill there is enough video buffered on the input
                     video_frame = self.video_in.dequeue()
                     if video_frame is not None and getattr(video_frame, "size", 0) > 0:
@@ -101,13 +101,13 @@ class Session:
                         if f is not None:
                             x1, y1, x2, y2 = f
                             cv2.rectangle(video_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        video_socket.send(self.session_id, video_frame.tobytes(order="C"))#self.video_out.enqueue(video_frame)
+                        self.video_out.enqueue(video_frame)
 
                 audio_size = len(self.translated_audio_in)
                 if audio_size >= AUDIO_INPUT_BUFFER_SIZE:
                     audio_seg = self.translated_audio_in.dequeue(audio_size-AUDIO_INPUT_BUFFER_SIZE)
                     if audio_seg:
-                        translated_audio_socket.send(self.session_id, audio_seg)#self.audio_out.enqueue(audio_seg)
+                        self.audio_out.enqueue(audio_seg)
 
         except Exception as e:
             print(f"Error in processing thread: {e}")
@@ -130,7 +130,7 @@ class Session:
             target_time = start_time + frame_index * AUDIO_CHUNK_DURATION
             frame_index += 1
 
-            audio = self.audio_out.dequeue(INTERNAL_N_AUDIO_CHUNK_BYTES*2)
+            audio = self.audio_out.dequeue(INTERNAL_N_AUDIO_CHUNK_BYTES)
             if audio:
                 translated_audio_socket.send(self.session_id, audio)
 
@@ -138,12 +138,10 @@ class Session:
 
             # Slight speed-up if buffer is too full
             if len(self.audio_out) >= AUDIO_OUTPUT_BUFFER_SIZE:
-                sleep_time *= 0.8
+                sleep_time *= 0.9
 
-            if sleep_time > 0.002:
-                time.sleep(sleep_time - 0.002)  # sleep most of the time
-            while time.perf_counter() < target_time:
-                pass  # busy-wait for final precision
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
     def send_video_data(self):
         global video_socket
@@ -171,11 +169,8 @@ class Session:
             if len(self.video_out) > VIDEO_OUTPUT_BUFFER_SIZE:
                 sleep_time *= 0.9
 
-            # Sleep most of the time, busy-wait for final precision
-            if sleep_time > 0.002:
-                time.sleep(sleep_time - 0.002)
-            while time.perf_counter() < target_time:
-                pass  # busy-wait for last microseconds
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
 class SessionManager:
     sessions_dict: Dict[str, Session] = {}

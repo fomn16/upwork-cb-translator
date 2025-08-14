@@ -1,42 +1,10 @@
 import threading
+import time
 from typing import Callable
-
+import heapq
 import zmq
 
-
 class CommunicationHelper:
-    """
-    A minimal ZeroMQ helper class.
-
-    - On init: provide send_port, recv_port, and a recv_callback.
-    - send(conn_id: str, payload: bytes) to send messages.
-    - Receives messages as (str connection id, bytes) and invokes callback.
-
-    Notes:
-      - Uses PUSH (sender) / PULL (receiver) pattern.
-      - Uses a background thread for receiving.
-      - Messages are sent/received as two frames:
-          [frame 0: UTF-8 string bytes][frame 1: raw bytes]
-
-    example:
-
-        from communication_helper import CommunicationHelper
-        import time
-        import pickle
-
-        def received_data_callback(a: str, b: bytes):
-            print(time.perf_counter() - pickle.loads(b))
-
-        with CommunicationHelper("test_1", 8003, 8002, received_data_callback) as ch:
-            i = 0
-            while True:
-                ch.send(f"user-{i}", pickle.dumps(
-                    time.perf_counter(), protocol=pickle.HIGHEST_PROTOCOL
-                ))
-                i += 1
-                time.sleep(1)
-    """
-
     def __init__(
         self,
         name: str,
@@ -48,42 +16,38 @@ class CommunicationHelper:
         host: str = "127.0.0.1",
         encoding: str = "utf-8",
         errors: str = "strict",
+        reorder_buffer_size: int = 10,        ### Max number of out-of-order messages to hold
     ):
-        """
-        Args:
-            send_port: Port used for sending messages.
-            recv_port: Port used for receiving messages.
-            recv_callback: Function invoked with (conn_id, payload).
-            host: Host for connect/bind (default localhost).
-            encoding: Encoding used for conn_id string (default utf-8).
-            errors: Error handling for encode/decode (default 'strict').
-        """
         self._ctx = zmq.Context.instance()
-
         self._recv_sock = self._ctx.socket(zmq.PULL)
         self._recv_callback = recv_callback
         self._send_socks = []
-
         self._stop = threading.Event()
         self.online = True
         self.name = name
         self._encoding = encoding
         self._errors = errors
 
-        if(com_method == "tcp"):
+        ### Sequence tracking
+        self._send_seq = {}
+        self._expected_seq = {}   # expected next seq per conn_id
+        self._reorder_buffers = {}  # conn_id -> {seq: (data, arrival_time)}
+        self._reorder_buffer_size = reorder_buffer_size
+
+        if com_method == "tcp":
             send_addr = f"tcp://{host}:{send_port}"
             recv_addr = f"tcp://{host}:{recv_port}"
         else:
             send_addr = f"ipc:///tmp/com_zmq_{send_port}.ipc"
             recv_addr = f"ipc:///tmp/com_zmq_{recv_port}.ipc"
 
-        if(send_port is not None):
+        if send_port is not None:
             self.send_lock = threading.Lock()
             self.send_addr = send_addr
         else:
             self.send_lock = None
 
-        if(recv_port is not None):
+        if recv_port is not None:
             self._recv_sock.bind(recv_addr)
             if run_in_another_thread:
                 self._thread = threading.Thread(
@@ -108,27 +72,27 @@ class CommunicationHelper:
             self._send_socks.append(socket)
 
     def send(self, conn_id: str, payload: bytes) -> None:
-        """
-        Send a message as two frames: UTF-8 string bytes + raw bytes.
-        """
-        if self.send_lock == None:
-            raise TypeError("send_port must be provided in the constructor in order to be able to send messages")
+        if self.send_lock is None:
+            raise TypeError("send_port must be provided to send messages")
         if not isinstance(conn_id, str):
             raise TypeError("conn_id must be a string")
         if not isinstance(payload, (bytes, bytearray, memoryview)):
             raise TypeError("payload must be bytes-like")
 
+        ### Get sequence number for this conn_id
+        seq = self._send_seq.get(conn_id, 0)
+        self._send_seq[conn_id] = (seq + 1) % (2**32)  # wrap-around safe
+
         header = conn_id.encode(self._encoding, errors=self._errors)
+        seq_bytes = seq.to_bytes(4, "big", signed=False)
+
         socket = self.borrow_socket()
         try:
-            socket.send_multipart([header, bytes(payload)])
+            socket.send_multipart([header, seq_bytes + bytes(payload)])
         finally:
             self.return_socket(socket)
 
     def close(self) -> None:
-        """
-        Stop the receiver thread and close sockets.
-        """
         self._stop.set()
         try:
             self._recv_sock.setsockopt(zmq.RCVTIMEO, 100)
@@ -142,7 +106,6 @@ class CommunicationHelper:
         with self.send_lock():
             for s in self._send_socks:
                 s.close(linger=0)
-        # Do not terminate shared context here.
 
     def __enter__(self):
         return self
@@ -160,15 +123,52 @@ class CommunicationHelper:
                     parts = self._recv_sock.recv_multipart(flags=zmq.NOBLOCK)
                     if len(parts) != 2:
                         continue
-                    conn_id_bytes = parts[0]
+                    conn_id = parts[0].decode(self._encoding, errors=self._errors)
                     payload = parts[1]
-                    conn_id = conn_id_bytes.decode(
-                        self._encoding, errors=self._errors
-                    )
-                    self._recv_callback(conn_id, payload)
+
+                    seq = int.from_bytes(payload[:4], "big", signed=False)
+                    data = payload[4:]
+
+                    self._handle_incoming(conn_id, seq, data)
+
                 except zmq.Again:
                     continue
                 except Exception as e:
                     print("Error in the interprocess communication: ", e)
                     continue
         self.online = False
+
+    def _handle_incoming(self, conn_id: str, seq: int, data: bytes):
+        expected = self._expected_seq.get(conn_id, 0)
+        buf = self._reorder_buffers.setdefault(conn_id, [])
+
+        if seq == expected:
+            # deliver immediately
+            self._deliver(conn_id, data)
+            expected = (expected + 1) % (2**32)
+
+            # flush any consecutive buffered frames
+            while buf and buf[0][0] == expected:
+                _, next_data = heapq.heappop(buf)
+                self._deliver(conn_id, next_data)
+                expected = (expected + 1) % (2**32)
+
+        elif seq > expected:
+            # store in heap
+            heapq.heappush(buf, (seq, data))
+
+            # if buffer too large, drop missing frames up to oldest
+            if len(buf) > self._reorder_buffer_size:
+                oldest_seq, oldest_data = heapq.heappop(buf)
+                expected = (oldest_seq + 1) % (2**32)
+                self._deliver(conn_id, oldest_data)
+
+        # else seq < expected → already delivered, ignore
+
+        self._expected_seq[conn_id] = expected
+
+    def _deliver(self, conn_id: str, data: bytes):
+        try:
+            self._recv_callback(conn_id, data)
+        except Exception as e:
+            print(f"Error in recv_callback: {e}")
