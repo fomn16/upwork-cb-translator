@@ -103,7 +103,7 @@ def threaded_generator(generator, max_prefetch=2):
 
 def datagen(frames, mels, face_det_results, prefetch=True):
     """
-    Generates batches of masked face images (CPU) and mel spectrograms (GPU) for inference.
+    Generates batches of masked face images (pinned CPU tensors) and mel spectrograms (GPU) for inference.
     """
     def _generator():
         img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
@@ -128,15 +128,24 @@ def datagen(frames, mels, face_det_results, prefetch=True):
                     coords_batch.append(coords)
 
             if len(img_batch) >= args.wav2lip_batch_size:
+                # Convert to pinned tensor here
                 img_batch_np = np.asarray(img_batch, dtype=np.float32)
                 img_masked = mask_half_face(img_batch_np)
-                yield img_masked, mel_batch, frame_batch, coords_batch
+                img_tensor = torch.from_numpy(
+                    np.transpose(img_masked, (0, 3, 1, 2))
+                ).float().pin_memory()
+
+                yield img_tensor, mel_batch, frame_batch, coords_batch
                 img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
 
         if img_batch:
             img_batch_np = np.asarray(img_batch, dtype=np.float32)
             img_masked = mask_half_face(img_batch_np)
-            yield img_masked, mel_batch, frame_batch, coords_batch
+            img_tensor = torch.from_numpy(
+                np.transpose(img_masked, (0, 3, 1, 2))
+            ).float().pin_memory()
+
+            yield img_tensor, mel_batch, frame_batch, coords_batch
 
     return threaded_generator(_generator()) if prefetch else _generator()
 
@@ -231,10 +240,8 @@ def run_inference(gen, mel_chunks: list) -> list:
     for img_batch, mel_batch, frames, coords in tqdm(
         gen, total=int(np.ceil(len(mel_chunks) / batch_size))
     ):
-        # img_batch is still NumPy (CPU) → convert to GPU
-        img_batch = torch.from_numpy(
-            np.transpose(img_batch, (0, 3, 1, 2))
-        ).float().to(device, non_blocking=True)
+        # img_batch is already a pinned tensor → just transfer to GPU
+        img_batch = img_batch.to(device, non_blocking=True)
 
         # mel_batch is already a list of GPU tensors → stack them
         mel_batch = torch.stack(mel_batch, dim=0).unsqueeze(1)  # [B, 1, n_mels, step_size]
