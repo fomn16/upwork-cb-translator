@@ -4,5 +4,5 @@ MAX_VIDEO_SPEED_CHANGE = 0.15               # video cannot be sped up or slowed 
 FACE_DETECT_FRAME_SKIP = 5                  # runs face detection once every 15 received frames
 
 MAX_LIPSYNC_MODEL_CHUNK_SECONDS = 1         # maximum ammount of time passed in each call to the lipsync model
-MIN_LIPSYNC_MODEL_CHUNK_SECONDS = 0.2       # maximum ammount of time passed in each call to the lipsync model
+MIN_LIPSYNC_MODEL_CHUNK_SECONDS = 0.2       # minimum ammount of time passed in each call to the lipsync model, only used at the end of a lipsync block call
 OUTPUT_QUEUE_SIZE_SECONDS = 1               # size of the output queue, should be greater than the time it takes to process one lipsync chunk

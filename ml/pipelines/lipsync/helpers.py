@@ -103,7 +103,7 @@ def threaded_generator(generator, max_prefetch=2):
 
 def datagen(frames, mels, face_det_results, prefetch=True):
     """
-    Generates batches of masked face images and mel spectrograms for inference.
+    Generates batches of masked face images (CPU) and mel spectrograms (GPU) for inference.
     """
     def _generator():
         img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
@@ -114,7 +114,6 @@ def datagen(frames, mels, face_det_results, prefetch=True):
             coords = clamp_coords(face_det_results[idx], frame.shape)
 
             if coords is None:
-                # No face detected: keep frame, insert None for coords
                 frame_batch.append(frame)
                 coords_batch.append(None)
             else:
@@ -124,22 +123,20 @@ def datagen(frames, mels, face_det_results, prefetch=True):
                     coords_batch.append(None)
                 else:
                     img_batch.append(face)
-                    mel_batch.append(mel)
+                    mel_batch.append(mel)  # Keep as GPU tensor
                     frame_batch.append(frame)
                     coords_batch.append(coords)
 
-            # Yield batch when full
             if len(img_batch) >= args.wav2lip_batch_size:
                 img_batch_np = np.asarray(img_batch, dtype=np.float32)
-                mel_batch_np = np.asarray(mel_batch, dtype=np.float32)[..., np.newaxis]
-                yield mask_half_face(img_batch_np), mel_batch_np, frame_batch, coords_batch
+                img_masked = mask_half_face(img_batch_np)
+                yield img_masked, mel_batch, frame_batch, coords_batch
                 img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
 
-        # Yield leftover batch
         if img_batch:
             img_batch_np = np.asarray(img_batch, dtype=np.float32)
-            mel_batch_np = np.asarray(mel_batch, dtype=np.float32)[..., np.newaxis]
-            yield mask_half_face(img_batch_np), mel_batch_np, frame_batch, coords_batch
+            img_masked = mask_half_face(img_batch_np)
+            yield img_masked, mel_batch, frame_batch, coords_batch
 
     return threaded_generator(_generator()) if prefetch else _generator()
 
@@ -177,9 +174,15 @@ def preprocess_audio(audio_bytes: bytes) -> torch.Tensor:
     mel = torch.log(torch.clamp(mel, min=1e-5))  # log-mel
     return mel.squeeze(0)  # [n_mels, time]
 
-def create_mel_chunks(mel: np.ndarray, frame_rate: float, step_size: int = 16) -> list:
+def create_mel_chunks(mel: torch.Tensor, frame_rate: float, step_size: int = 16) -> list:
     mel_chunks = []
     mel_idx_multiplier = 80.0 / frame_rate
+
+    # Pad mel if too short
+    if mel.shape[1] < step_size:
+        pad_width = step_size - mel.shape[1]
+        mel = torch.nn.functional.pad(mel, (0, pad_width))
+
     i = 0
     while True:
         start_idx = int(i * mel_idx_multiplier)
@@ -190,33 +193,32 @@ def create_mel_chunks(mel: np.ndarray, frame_rate: float, step_size: int = 16) -
         i += 1
     return mel_chunks
 
-def match_frames_to_mels(frames: list, mel_chunks: list) -> list:
+def match_frames_to_mels(frames: list, mel_chunks: list, tolerance: int = 3) -> list:
     """
     Ensures the number of frames matches the number of mel chunks.
     Pads with the last frame or truncates as needed.
+    Logs a warning if mismatch is larger than tolerance.
     """
     num_frames = len(frames)
     num_mels = len(mel_chunks)
+    diff = num_mels - num_frames
 
-    if num_mels > num_frames:
-        print("WARINING:"
-            f"Mel chunks ({num_mels}) exceed frames ({num_frames}). "
-            f"Padding with last frame."
+    if abs(diff) > tolerance:
+        print(
+            f"[warning] Large mismatch between frames ({num_frames}) "
+            f"and mel chunks ({num_mels}). Adjusting..."
         )
-        frames += [frames[-1]] * (num_mels - num_frames)
-    elif num_mels < num_frames:
-        print("WARNING:"
-            f"Frames ({num_frames}) exceed mel chunks ({num_mels}). "
-            f"Truncating extra frames."
-        )
+
+    if diff > 0:
+        # More mels than frames → pad with last frame
+        frames += [frames[-1]] * diff
+    elif diff < 0:
+        # More frames than mels → truncate
         frames = frames[:num_mels]
 
     return frames
 
 def run_inference(gen, mel_chunks: list) -> list:
-    """
-    Runs the lipsync model on batches from datagen and returns processed frames.
-    """
     frames_output = []
     frames_written = 0
 
@@ -229,16 +231,16 @@ def run_inference(gen, mel_chunks: list) -> list:
     for img_batch, mel_batch, frames, coords in tqdm(
         gen, total=int(np.ceil(len(mel_chunks) / batch_size))
     ):
+        # img_batch is still NumPy (CPU) → convert to GPU
         img_batch = torch.from_numpy(
             np.transpose(img_batch, (0, 3, 1, 2))
         ).float().to(device, non_blocking=True)
 
-        mel_batch = torch.from_numpy(
-            np.transpose(mel_batch, (0, 3, 1, 2))
-        ).float().to(device, non_blocking=True)
+        # mel_batch is already a list of GPU tensors → stack them
+        mel_batch = torch.stack(mel_batch, dim=0).unsqueeze(1)  # [B, 1, n_mels, step_size]
 
         with torch.no_grad():
-            with autocast():  # Mixed precision
+            with autocast():
                 pred = model(mel_batch, img_batch)
 
         pred = pred.float().cpu().numpy().transpose(0, 2, 3, 1) * 255.0
@@ -249,8 +251,6 @@ def run_inference(gen, mel_chunks: list) -> list:
                 continue
 
             x1, y1, x2, y2 = map(int, c)
-
-            # Clamp coordinates to frame boundaries
             h, w = f.shape[:2]
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
@@ -285,17 +285,19 @@ def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect):
     mel_gpu = preprocess_audio(audio_bytes)  # [n_mels, time] on GPU
     print(f"[stream] Audio processed in {time.time() - audio_start:.2f}s")
 
-    # 2. Mel chunk creation (still on GPU)
-    mel_chunks = create_mel_chunks(mel_gpu.cpu().numpy(), FRAME_RATE)
+    # 2. Mel chunk creation (GPU)
+    mel_chunks = create_mel_chunks(mel_gpu, FRAME_RATE)
     print(f"[stream] Mel chunks: {len(mel_chunks)}")
 
-    # 3. Match mel_chunks and frames
-    full_frames = match_frames_to_mels(frame_buffer, mel_chunks)
+    # Skip if mel chunk too short for model
+    if mel_chunks[0].shape[1] < 3:
+        print("[stream] Skipping lipsync: mel chunk too short")
+        return frame_buffer
 
-    # 4. Prepare generator
-    gen = datagen(full_frames, mel_chunks, face_detect)
+    # 3. Prepare generator (mel stays on GPU)
+    gen = datagen(frame_buffer, mel_chunks, face_detect)
 
-    # 5. Run inference (mixed precision)
+    # 4. Run inference (mixed precision)
     return run_inference(gen, mel_chunks)
 
 print("Loading MediaPipe Face Detector (GPU)...")

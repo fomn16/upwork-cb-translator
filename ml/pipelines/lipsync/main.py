@@ -89,46 +89,77 @@ class Session:
     def process(self):
         try:
             while True: 
-                timeout = not self.received_data.wait(timeout=30) # waits for data to be received, also has a timeout
-                if(self.raw_audio_in.closed or self.translated_audio_in.closed or self.video_in.closed):    # IMPORTANT, must be refactored if audio/video is eventually optional
+                timeout = not self.received_data.wait(timeout=30)  # waits for data to be received, also has a timeout
+                if (self.raw_audio_in.closed or 
+                    self.translated_audio_in.closed or 
+                    self.video_in.closed):  # IMPORTANT: must be refactored if audio/video is eventually optional
                     break
-                if(timeout):
-                    continue # if woke up due to timeout, goes to the next loop iteration
+                if timeout:
+                    continue  # if woke up due to timeout, goes to the next loop iteration
 
                 available_video_frames = len(self.video_in)
-                if available_video_frames >= VIDEO_INPUT_BUFFER_SIZE: # waits untill there is enough video buffered on the input
+                if available_video_frames >= VIDEO_INPUT_BUFFER_SIZE:  # waits until there is enough video buffered on the input
                     available_audio_bytes = len(self.translated_audio_in)
-                    available_audio_time = available_audio_bytes/(2*INTERNAL_SAMPLERATE)
-                    if available_audio_time > MIN_LIPSYNC_MODEL_CHUNK_SECONDS: # if there is enough translated audio, applies lipsync
-                        available_video_time = available_video_frames/FRAME_RATE
-                        if (available_video_time < available_audio_time): # if there is more audio than video, processes MAX_LIPSYNC_MODEL_CHUNK_SECONDS, and leaves the rest for the next iteration
-                            video_frames_to_process = available_video_frames
-                            audio_bytes_to_process = math.floor(available_video_time*INTERNAL_SAMPLERATE)*2 # *2 is on the outside because we cannot process an even number of audio bytes (an audio sample is 2 bytes)
-                        else: # if there is more video than audio, processes the entire audio queue
-                            audio_bytes_to_process = available_audio_bytes
-                            video_frames_to_process = math.floor(available_video_time*FRAME_RATE)
+                    available_audio_time = available_audio_bytes / (2 * INTERNAL_SAMPLERATE)
+                    available_video_time = available_video_frames / FRAME_RATE
 
-                        video_for_lipsync = []
-                        positions_for_lipsync = []
-                        for _ in range(video_frames_to_process):
-                            video_for_lipsync.append(self.video_in.dequeue().copy())
-                            positions_for_lipsync.append(self.face_positions.dequeue())
-                        audio_for_lipsync = self.translated_audio_in.dequeue(audio_bytes_to_process)
+                    if available_audio_time > MAX_LIPSYNC_MODEL_CHUNK_SECONDS:
+                        while available_audio_time > MIN_LIPSYNC_MODEL_CHUNK_SECONDS and available_video_time > MIN_LIPSYNC_MODEL_CHUNK_SECONDS:
+                            chunk_seconds = min(
+                                available_video_time,
+                                available_audio_time,
+                                MAX_LIPSYNC_MODEL_CHUNK_SECONDS
+                            )
 
-                        synced_video = run_lipsync_from_frames(video_for_lipsync, audio_for_lipsync, positions_for_lipsync)
+                            video_frames_to_process = int(round(chunk_seconds * FRAME_RATE))
+                            audio_bytes_to_process = int(round(chunk_seconds * INTERNAL_SAMPLERATE)) * 2
 
-                        for synced_video_frame in synced_video:
-                            self.video_out.enqueue(synced_video_frame)
-                        
-                        self.audio_out.enqueue(audio_for_lipsync)
-                        
-                    else:   # if we have no translated audio, sends the video back
+                            video_frames_to_process = min(video_frames_to_process, available_video_frames)
+                            audio_bytes_to_process = min(audio_bytes_to_process, available_audio_bytes)
+
+                            video_for_lipsync = []
+                            positions_for_lipsync = []
+                            for _ in range(video_frames_to_process):
+                                video_for_lipsync.append(self.video_in.dequeue().copy())
+                                positions_for_lipsync.append(self.face_positions.dequeue())
+
+                            audio_for_lipsync = self.translated_audio_in.dequeue(audio_bytes_to_process)
+
+                            synced_video = run_lipsync_from_frames(
+                                video_for_lipsync,
+                                audio_for_lipsync,
+                                positions_for_lipsync
+                            )
+
+                            for synced_video_frame in synced_video:
+                                self.video_out.enqueue(synced_video_frame)
+
+                            self.audio_out.enqueue(audio_for_lipsync)
+
+                            # Update available times
+                            available_video_frames = len(self.video_in)
+                            available_audio_bytes = len(self.translated_audio_in)
+                            available_audio_time = available_audio_bytes / (2 * INTERNAL_SAMPLERATE)
+                            available_video_time = available_video_frames / FRAME_RATE
+
+                    else:
+                        # No translated audio yet → pass video through
                         video_frame = self.video_in.dequeue().copy()
-                        f = self.face_positions.dequeue() # not really used, but we need to update the face positions queue state anyways
+                        f = self.face_positions.dequeue()  # still dequeue to keep queues in sync
                         if f is not None:
                             x1, y1, x2, y2 = f
                             cv2.rectangle(video_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                        # === Enqueue matching silent audio ===
+                        # Duration of one frame in seconds
+                        frame_duration_sec = 1.0 / FRAME_RATE
+                        # Number of audio samples for that duration
+                        num_samples = int(round(frame_duration_sec * INTERNAL_SAMPLERATE))
+                        # Create silent audio (16-bit PCM, so 2 bytes per sample)
+                        silent_audio = (np.zeros(num_samples, dtype=np.int16)).tobytes()
+                        
                         self.video_out.enqueue(video_frame)
+                        self.audio_out.enqueue(silent_audio)
 
         except Exception as e:
             print(f"Error in processing thread: {e}")
@@ -138,29 +169,16 @@ class Session:
 
     def send_audio_data(self):
         global translated_audio_socket
-        while True: # waits for output queue to be filled before starting to return data
-            time.sleep(AUDIO_CHUNK_DURATION)
-            if len(self.audio_out) >= AUDIO_OUTPUT_BUFFER_SIZE:
-                break
-        print("audio output has enough data to start streaming")
-
         start_time = time.perf_counter()
         frame_index = 0
-        
         while not self.closed:
             target_time = start_time + frame_index * AUDIO_CHUNK_DURATION
             frame_index += 1
-
             audio = self.audio_out.dequeue(INTERNAL_N_AUDIO_CHUNK_BYTES)
             if audio:
                 translated_audio_socket.send(self.session_id, audio)
 
             sleep_time = target_time - time.perf_counter()
-
-            # Slight speed-up if buffer is too full
-            if len(self.audio_out) >= AUDIO_OUTPUT_BUFFER_SIZE:
-                sleep_time *= 0.9
-
             if sleep_time > 0:
                 time.sleep(sleep_time)
 

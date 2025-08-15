@@ -46,7 +46,7 @@ def process_voice_embedding_chunk(
     is_silent
 ):
     audio_buffer.append(seg)
-    print(session_id, chunk_count)
+    #print(session_id, chunk_count)
     save_time = time.time()
 
     if chunk_count == 50:
@@ -444,18 +444,11 @@ def process_translation_chunk_whisper(
                         translated_audio_bytes = (samples.numpy() * 32767.0).astype(np.int16).T.tobytes()
                     output_function(translated_audio_bytes)
 
-            else:
-                print(f"⚠️ Skipping invalid or non-English transcription: {transcribed_text}", flush=True)
-
-            #else:
-                # If no transcription, pass through original audio
-            #    output_queue.enqueue(audio_chunk)
+                    processing_time = time.time() - start_time
+                    print(f"⏱️ Whisper processing time: {processing_time:.4f}s")
         else:
             print("❗ Whisper online processor not initialized")
             output_function(audio_chunk)
-
-        processing_time = time.time() - start_time
-        print(f"⏱️ Whisper processing time: {processing_time:.4f}s")
 
     except Exception as e:
         print(f"❗ Exception in Whisper processing: {e}")
