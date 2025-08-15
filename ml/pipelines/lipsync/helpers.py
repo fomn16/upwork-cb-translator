@@ -1,9 +1,5 @@
 import os
-import torch
-
-#for lip sync
 import numpy as np
-import subprocess
 from tqdm import tqdm
 from models import Wav2Lip
 import lib.audio as audio
@@ -14,9 +10,11 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import cv2
 import threading
-import queue
+from queue import Queue
+from threading import Thread
+import torch
+from torch.cuda.amp import autocast
 import torchaudio
-import io
 
 from config.lipsync_config import *
 from config.video_config import *
@@ -47,34 +45,6 @@ if os.path.isfile(args.face) and args.face.split('.')[-1] in ['jpg', 'png', 'jpe
 from ultralytics.utils import LOGGER
 LOGGER.setLevel("ERROR")
 
-def face_detect_many(images):
-    start_time = time.time()
-    results = []
-    last_box = None
-
-    for i, img in enumerate(images):
-        if i % 10 == 0:
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            yolo_result = face_detector_instance.predict(img_rgb, verbose=False)
-            boxes = yolo_result[0].boxes.xyxy
-
-            if boxes is None or len(boxes) == 0:
-                last_box = None
-                results.append(None)
-                continue
-
-            x1, y1, x2, y2 = boxes[0].int().tolist()
-            pady1, pady2, padx1, padx2 = args.pads
-            y1 = max(0, y1 - pady1)
-            y2 = min(img.shape[0], y2 + pady2)
-            x1 = max(0, x1 - padx1)
-            x2 = min(img.shape[1], x2 + padx2)
-            last_box = [x1, y1, x2, y2]
-
-        results.append(last_box)
-
-    return results
-
 def load_model(path):
     start = time.time()
     model = Wav2Lip()
@@ -90,163 +60,243 @@ def load_model(path):
 
 model = load_model("wav2lip_Chinese.pth")
 
-# ✅ MODIFIED datagen (preserve original frame if no face)
-def datagen(frames, mels, face_det_results):
-    img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
-    print('len frames vs len mels: ', len(frames), len(mels))
-    for i, m in enumerate(mels):
-        idx = 0 if args.static else i % len(frames)
-        frame = frames[idx]
-        face_coords = face_det_results[idx]
+def clamp_coords(coords, frame_shape):
+    """Clamp face coordinates to be within frame boundaries."""
+    if coords is None:
+        return None
+    x1, y1, x2, y2 = map(int, coords)
+    h, w = frame_shape[:2]
+    return max(0, x1), max(0, y1), min(w, x2), min(h, y2)
 
-        if face_coords is None:
-            # No face detected: keep frame, insert None for coords
-            frame_batch.append(frame)
-            coords_batch.append(None)
-            continue
+def crop_and_resize_face(frame, coords, size):
+    """Crop and resize the face region from the frame."""
+    if coords is None:
+        return None
+    x1, y1, x2, y2 = coords
+    if x2 <= x1 or y2 <= y1:
+        return None
+    face = frame[y1:y2, x1:x2]
+    return cv2.resize(face, (size, size))
 
-        x1, y1, x2, y2 = face_coords
-        face = frame[y1:y2, x1:x2]
-        face = cv2.resize(face, (args.img_size, args.img_size))
-        img_batch.append(face)
-        mel_batch.append(m)
-        frame_batch.append(frame)
-        coords_batch.append((x1, y1, x2, y2))
+def mask_half_face(img_batch):
+    """Mask the right half of each face image and concatenate with original."""
+    img_masked = img_batch.copy()
+    img_masked[:, img_batch.shape[2] // 2 :, :, :] = 0
+    return np.concatenate((img_masked, img_batch), axis=3) / 255.0
 
-        if len(img_batch) >= args.wav2lip_batch_size:
-            img_batch, mel_batch = np.asarray(img_batch), np.asarray(mel_batch)
-            img_masked = img_batch.copy()
-            img_masked[:, args.img_size // 2:] = 0
-            img_batch = np.concatenate((img_masked, img_batch), axis=3) / 255.0
-            mel_batch = np.reshape(mel_batch, [len(mel_batch), mel_batch.shape[1], mel_batch.shape[2], 1])
-            yield img_batch, mel_batch, frame_batch, coords_batch
-            img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
+def threaded_generator(generator, max_prefetch=2):
+    """Run a generator in a background thread for prefetching."""
+    queue = Queue(max_prefetch)
 
-    if len(img_batch) > 0:
-        img_batch = np.asarray(img_batch, dtype=np.float32) / 255.0
-        mel_batch = np.asarray(mel_batch, dtype=np.float32)
-        img_masked = img_batch.copy()
-        img_masked[:, args.img_size // 2:, :, :] = 0
-        img_combined = np.empty((img_batch.shape[0], img_batch.shape[1], img_batch.shape[2], img_batch.shape[3] * 2), dtype=np.float32)
-        img_combined[:, :, :, :img_batch.shape[3]] = img_masked
-        img_combined[:, :, :, img_batch.shape[3]:] = img_batch
-        mel_batch = mel_batch[..., np.newaxis]
-        yield img_combined, mel_batch, frame_batch, coords_batch
+    def producer():
+        for item in generator:
+            queue.put(item)
+        queue.put(None)  # Sentinel to signal end
 
-def video_writer_worker(write_queue, output_path, frame_size, fps):
-    fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    writer = cv2.VideoWriter(output_path, fourcc, fps, frame_size)
+    Thread(target=producer, daemon=True).start()
 
     while True:
-        frame = write_queue.get()
-        if frame is None:
+        item = queue.get()
+        if item is None:
             break
-        writer.write(frame)
+        yield item
 
-    writer.release()
+def datagen(frames, mels, face_det_results, prefetch=True):
+    """
+    Generates batches of masked face images and mel spectrograms for inference.
+    """
+    def _generator():
+        img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
 
+        for i, mel in enumerate(mels):
+            idx = 0 if args.static else i % len(frames)
+            frame = frames[idx]
+            coords = clamp_coords(face_det_results[idx], frame.shape)
 
-def run_lipsync_from_frames(frame_buffer: list, audio_bytes: bytes, face_detect: list):
-    full_frames = frame_buffer
-    frames_output = []
-    print(f"[stream] Received {len(full_frames)} frames")
+            if coords is None:
+                # No face detected: keep frame, insert None for coords
+                frame_batch.append(frame)
+                coords_batch.append(None)
+            else:
+                face = crop_and_resize_face(frame, coords, args.img_size)
+                if face is None:
+                    frame_batch.append(frame)
+                    coords_batch.append(None)
+                else:
+                    img_batch.append(face)
+                    mel_batch.append(mel)
+                    frame_batch.append(frame)
+                    coords_batch.append(coords)
 
-    # === 1. Audio Preprocessing ===
-    audio_start = time.time()
+            # Yield batch when full
+            if len(img_batch) >= args.wav2lip_batch_size:
+                img_batch_np = np.asarray(img_batch, dtype=np.float32)
+                mel_batch_np = np.asarray(mel_batch, dtype=np.float32)[..., np.newaxis]
+                yield mask_half_face(img_batch_np), mel_batch_np, frame_batch, coords_batch
+                img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
+
+        # Yield leftover batch
+        if img_batch:
+            img_batch_np = np.asarray(img_batch, dtype=np.float32)
+            mel_batch_np = np.asarray(mel_batch, dtype=np.float32)[..., np.newaxis]
+            yield mask_half_face(img_batch_np), mel_batch_np, frame_batch, coords_batch
+
+    return threaded_generator(_generator()) if prefetch else _generator()
+
+_mel_filterbank = None
+def get_mel_filterbank(n_mels=80, n_fft=1024, hop_length=256, sample_rate=16000):
+    global _mel_filterbank
+    if _mel_filterbank is None:
+        mel_fb = torchaudio.transforms.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            n_mels=n_mels,
+            center=True,
+            power=1.0,
+            norm="slaney",
+            mel_scale="slaney"
+        ).to(device)
+        _mel_filterbank = mel_fb
+    return _mel_filterbank
+
+def preprocess_audio(audio_bytes: bytes) -> torch.Tensor:
+    """
+    Convert raw audio bytes to a mel spectrogram on GPU.
+    Returns a torch.Tensor [n_mels, time] on GPU.
+    """
     waveform_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
-    waveform_float32 = waveform_int16.astype(np.float32) / 32768.0
-    mel = audio.melspectrogram(waveform_float32)
-    print(f"[stream] Audio processed in {time.time() - audio_start:.2f}s")
+    waveform_float32 = torch.from_numpy(waveform_int16.astype(np.float32) / 32768.0).to(device)
 
-    # === 2. Mel Chunks Creation ===
-    mel_chunks, mel_step_size = [], 16
-    mel_idx_multiplier = 80. / FRAME_RATE
+    # Ensure shape [1, time]
+    if waveform_float32.dim() == 1:
+        waveform_float32 = waveform_float32.unsqueeze(0)
+
+    mel_transform = get_mel_filterbank()
+    mel = mel_transform(waveform_float32)  # [1, n_mels, time]
+    mel = torch.log(torch.clamp(mel, min=1e-5))  # log-mel
+    return mel.squeeze(0)  # [n_mels, time]
+
+def create_mel_chunks(mel: np.ndarray, frame_rate: float, step_size: int = 16) -> list:
+    mel_chunks = []
+    mel_idx_multiplier = 80.0 / frame_rate
     i = 0
     while True:
         start_idx = int(i * mel_idx_multiplier)
-        if start_idx + mel_step_size > mel.shape[1]:
-            mel_chunks.append(mel[:, -mel_step_size:])
+        if start_idx + step_size > mel.shape[1]:
+            mel_chunks.append(mel[:, -step_size:])
             break
-        mel_chunks.append(mel[:, start_idx:start_idx + mel_step_size])
+        mel_chunks.append(mel[:, start_idx:start_idx + step_size])
         i += 1
-    print(f"[stream] Mel chunks: {len(mel_chunks)}")
+    return mel_chunks
 
-    # === 3. Match mel_chunks and frames ===
-    print(f"mel chunks: {len(mel_chunks)}, fullframes: {len(full_frames)}")
-    if len(mel_chunks) > len(full_frames):
-        full_frames += [full_frames[-1]] * (len(mel_chunks) - len(full_frames))
-    else:
-        full_frames = full_frames[:len(mel_chunks)]
+def match_frames_to_mels(frames: list, mel_chunks: list) -> list:
+    """
+    Ensures the number of frames matches the number of mel chunks.
+    Pads with the last frame or truncates as needed.
+    """
+    num_frames = len(frames)
+    num_mels = len(mel_chunks)
 
-    # === 4. Prepare datagen ===
-    gen = datagen(full_frames.copy(), mel_chunks, face_detect)
+    if num_mels > num_frames:
+        print("WARINING:"
+            f"Mel chunks ({num_mels}) exceed frames ({num_frames}). "
+            f"Padding with last frame."
+        )
+        frames += [frames[-1]] * (num_mels - num_frames)
+    elif num_mels < num_frames:
+        print("WARNING:"
+            f"Frames ({num_frames}) exceed mel chunks ({num_mels}). "
+            f"Truncating extra frames."
+        )
+        frames = frames[:num_mels]
 
-    # === 6. Run Inference ===
+    return frames
+
+def run_inference(gen, mel_chunks: list) -> list:
+    """
+    Runs the lipsync model on batches from datagen and returns processed frames.
+    """
+    frames_output = []
     frames_written = 0
-    args.wav2lip_batch_size = min(len(mel_chunks), args.wav2lip_batch_size or 32)
-    if args.wav2lip_batch_size == 0:
-        raise ValueError("No mel chunks available.")
 
-    for i, (img_batch, mel_batch, frames, coords) in enumerate(
-        tqdm(gen, total=int(np.ceil(len(mel_chunks) / args.wav2lip_batch_size)))
+    batch_size = min(len(mel_chunks), args.wav2lip_batch_size or 32)
+    if batch_size == 0:
+        raise ValueError("No mel chunks available for inference.")
+
+    print(f"[stream] Running inference with batch size {batch_size}")
+
+    for img_batch, mel_batch, frames, coords in tqdm(
+        gen, total=int(np.ceil(len(mel_chunks) / batch_size))
     ):
-        img_batch = torch.FloatTensor(np.transpose(img_batch, (0, 3, 1, 2))).to(device)
-        mel_batch = torch.FloatTensor(np.transpose(mel_batch, (0, 3, 1, 2))).to(device)
+        img_batch = torch.from_numpy(
+            np.transpose(img_batch, (0, 3, 1, 2))
+        ).float().to(device, non_blocking=True)
+
+        mel_batch = torch.from_numpy(
+            np.transpose(mel_batch, (0, 3, 1, 2))
+        ).float().to(device, non_blocking=True)
 
         with torch.no_grad():
-            pred = model(mel_batch, img_batch)
+            with autocast():  # Mixed precision
+                pred = model(mel_batch, img_batch)
 
-        pred = pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.
+        pred = pred.float().cpu().numpy().transpose(0, 2, 3, 1) * 255.0
 
         for p, f, c in zip(pred, frames, coords):
             if c is None:
                 frames_output.append(f)
                 continue
-            x1, y1, x2, y2 = c
+
+            x1, y1, x2, y2 = map(int, c)
+
+            # Clamp coordinates to frame boundaries
+            h, w = f.shape[:2]
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+
             if x2 <= x1 or y2 <= y1:
                 frames_output.append(f)
                 continue
+
             try:
-                p = cv2.resize(p.astype(np.uint8), (x2 - x1, y2 - y1))
-                f[y1:y2, x1:x2] = cv2.addWeighted(f[y1:y2, x1:x2], 0.2, p, 0.8, 0)
+                p_resized = cv2.resize(p.astype(np.uint8), (x2 - x1, y2 - y1))
+                f[y1:y2, x1:x2] = cv2.addWeighted(
+                    f[y1:y2, x1:x2], 0.2, p_resized, 0.8, 0
+                )
             except Exception as e:
-                print(f"[warning] Error applying lipsync: {e}")
+                print(f"Error applying lipsync: {e}")
+
             frames_output.append(f)
             frames_written += 1
 
-    # === 7. Fallback if no frames written ===
-    if frames_written == 0:
-        print("⚠️ No processed frames. Writing fallback video with original frames.")
-        for f in full_frames:
-            frames_output.append(f)
-    print(f"[stream] Lip-synced video created")
+    print(f"[stream] Inference complete. Frames written: {frames_written}")
     return frames_output
 
-'''  
-with Listener(address, authkey=authkey) as listener:
-    while True:
-        print("[Audio Worker] Waiting for a job...")
-        with listener.accept() as conn:
-            print("[Audio Worker] Job accepted")
-            try:
-                data = conn.recv_bytes()
-                frame_buffer, audio_path, output_path = pickle.loads(data)
-                print(f"frame_size: {len(frame_buffer)}")
+def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect):
+    if not frame_buffer or not audio_bytes:
+        print("WARNING: Empty frames or audio. Skipping lipsync.")
+        return frame_buffer
 
-                print("[Audio Worker] Running lip sync...")
-                no_audio_path, final_path = run_lipsync_from_frames(
-                    frame_buffer=frame_buffer,
-                    audio_bytes=audio_path,
-                    output_path=output_path,
-                    with_audio=True
-                )
-                conn.send((no_audio_path, final_path, None))
-                print("[Audio Worker] Job completed")
+    print(f"[stream] Received {len(frame_buffer)} frames")
 
-            except Exception as e:
-                print(f"[Audio Worker] Error: {e}")
-                conn.send((None, None, str(e)))
-'''
+    # 1. Audio preprocessing (GPU)
+    audio_start = time.time()
+    mel_gpu = preprocess_audio(audio_bytes)  # [n_mels, time] on GPU
+    print(f"[stream] Audio processed in {time.time() - audio_start:.2f}s")
+
+    # 2. Mel chunk creation (still on GPU)
+    mel_chunks = create_mel_chunks(mel_gpu.cpu().numpy(), FRAME_RATE)
+    print(f"[stream] Mel chunks: {len(mel_chunks)}")
+
+    # 3. Match mel_chunks and frames
+    full_frames = match_frames_to_mels(frame_buffer, mel_chunks)
+
+    # 4. Prepare generator
+    gen = datagen(full_frames, mel_chunks, face_detect)
+
+    # 5. Run inference (mixed precision)
+    return run_inference(gen, mel_chunks)
 
 print("Loading MediaPipe Face Detector (GPU)...")
 
@@ -275,7 +325,6 @@ dummy_img = np.random.randint(0, 255, (FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.u
 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=dummy_img)
 _ = face_detector_instance.detect(mp_image)
 print("Warm-up done.")
-
 
 def face_detect_once(frame):
     """
