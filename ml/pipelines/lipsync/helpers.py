@@ -57,10 +57,6 @@ def load_model(path):
     model.eval()
     print(f"[load_model] Loaded in {time.time() - start:.2f}s")
 
-    # ✅ Compile the model
-    print("[load_model] Compiling model with torch.compile()")
-    model = torch.compile(model)
-
     # ✅ Warmup with fixed input shapes
     print("[load_model] Warming up with (1,1,80,16) mel and (1,6,96,96) face input...")
 
@@ -141,12 +137,12 @@ def datagen(frames, mels, face_det_results, prefetch=True):
                     coords_batch.append(None)
                 else:
                     img_batch.append(face)
-                    mel_batch.append(mel)  # Keep as GPU tensor
+                    mel_batch.append(mel)
                     frame_batch.append(frame)
                     coords_batch.append(coords)
 
-            if len(img_batch) >= args.wav2lip_batch_size:
-                # Convert to pinned tensor here
+            # ✅ yield as soon as we have a full batch
+            if len(img_batch) >= len(mels):
                 img_batch_np = np.asarray(img_batch, dtype=np.float32)
                 img_masked = mask_half_face(img_batch_np)
                 img_tensor = torch.from_numpy(
@@ -156,6 +152,7 @@ def datagen(frames, mels, face_det_results, prefetch=True):
                 yield img_tensor, mel_batch, frame_batch, coords_batch
                 img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
 
+        # ✅ flush leftovers (if any)
         if img_batch:
             img_batch_np = np.asarray(img_batch, dtype=np.float32)
             img_masked = mask_half_face(img_batch_np)
@@ -249,23 +246,21 @@ def run_inference(gen, mel_chunks: list) -> list:
     frames_output = []
     frames_written = 0
 
-    batch_size = min(len(mel_chunks), args.wav2lip_batch_size or 32)
+    batch_size = len(mel_chunks)
     if batch_size == 0:
         raise ValueError("No mel chunks available for inference.")
 
     print(f"[stream] Running inference with batch size {batch_size}")
 
-    for img_batch, mel_batch, frames, coords in tqdm(
-        gen, total=int(np.ceil(len(mel_chunks) / batch_size))
-    ):
-        # img_batch is already a pinned tensor → just transfer to GPU
+    for img_batch, mel_batch, frames, coords in tqdm(gen, total=1):
+        # img_batch is pinned CPU tensor → move to GPU
         img_batch = img_batch.to(device, non_blocking=True)
 
-        # mel_batch is already a list of GPU tensors → stack them
-        mel_batch = torch.stack(mel_batch, dim=0).unsqueeze(1)  # [B, 1, n_mels, step_size]
+        # mel_batch is list of GPU tensors → stack
+        mel_batch = torch.stack(mel_batch, dim=0).unsqueeze(1)  # [B, 1, 80, step_size]
 
-        with torch.no_grad():
-            with autocast():
+        with torch.inference_mode():
+            with torch.amp.autocast("cuda", enabled=(device == "cuda")):
                 pred = model(mel_batch, img_batch)
 
         pred = pred.float().cpu().numpy().transpose(0, 2, 3, 1) * 255.0

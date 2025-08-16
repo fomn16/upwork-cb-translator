@@ -1,0 +1,1 @@
+COMPILE_MODELS = True   # enables compiling and warmup for models. Increases startup time, but greatly reduces inference time.

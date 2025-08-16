@@ -292,7 +292,7 @@ class OpenVoice(CloningMixin, BaseVC):
             win_length=self.config.audio.win_length,
             center=False,
         ).to(self.device)
-        with torch.no_grad():
+        with torch.inference_mode():
             g = self.ref_enc(spec.transpose(1, 2)).unsqueeze(-1)
 
         return g, spec

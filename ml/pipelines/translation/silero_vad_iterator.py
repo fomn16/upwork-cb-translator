@@ -54,7 +54,7 @@ class VADIterator:
         self.temp_end = 0
         self.current_sample = 0
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def __call__(self, x, return_seconds=False, time_resolution: int = 1):
         """
         x: torch.Tensor

@@ -48,9 +48,7 @@ def process_voice_embedding_chunk(
 ):
     audio_buffer.append(seg)
     #print(session_id, chunk_count)
-    save_time = time.time()
-
-    if chunk_count == 50:
+    if chunk_count == 50 and PROCESS_VOICE_EMBEDDING_EVERY_50_CHUNKS:
         os.makedirs(VOICE_EMBEDDING_CHUNK_RECORDINGS_LOCATION, exist_ok=True)
         print("🟡 Received 50 chunks – checking for silence")
 
@@ -464,9 +462,9 @@ def initialize_whisper_for_session(session_id, lang="te"):
     class WhisperArgs:
         def __init__(self):
             self.language = lang
-            self.min_chunk_size = 1.0
+            self.min_chunk_size = 0.3
             self.vac = True
-            self.model = "medium"
+            self.model = "distil-large-v3"
             self.task = "translate"
             self.model_cache_dir = None
             self.model_dir = None
@@ -555,7 +553,7 @@ class SessionProcess:
                     if ENABLE_TRANSLATION:
                         process_translation_chunk_whisper(
                             seg,                            # audio chunk bytes
-                            self.output,#output_queue,      # function that outputs audio bytes # (previouslt, your queue to receive transcriptions
+                            self.output,#output_queue,      # function that outputs audio bytes # (previously, your queue to receive transcriptions)
                             input_sr=INTERNAL_SAMPLERATE,   # input sample rate of the audio chunk
                             target_sr=INTERNAL_SAMPLERATE,  # sample rate expected by Whisper
                             target_lang = self.tgt_lang,
