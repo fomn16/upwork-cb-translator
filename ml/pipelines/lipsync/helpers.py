@@ -51,11 +51,29 @@ def load_model(path):
     print("Loading checkpoint from: {}".format(path))
     checkpoint = torch.load(path, map_location=device)
     s = checkpoint["state_dict"]
-    new_s = {k.replace('module.', ''): v for k, v in s.items()}
+    new_s = {k.replace("module.", ""): v for k, v in s.items()}
     model.load_state_dict(new_s)
     model = model.to(device)
     model.eval()
     print(f"[load_model] Loaded in {time.time() - start:.2f}s")
+
+    # ✅ Compile the model
+    print("[load_model] Compiling model with torch.compile()")
+    model = torch.compile(model)
+
+    # ✅ Warmup with fixed input shapes
+    print("[load_model] Warming up with (1,1,80,16) mel and (1,6,96,96) face input...")
+
+    with torch.inference_mode():
+        # Mel input: [B, 1, n_mels, step_size]
+        dummy_mel = torch.randn(1, 1, 80, 16, device=device, dtype=torch.float32)
+        # Face input: [B, 6, 96, 96]
+        dummy_face = torch.randn(1, 6, 96, 96, device=device, dtype=torch.float32)
+
+        _ = model(dummy_mel, dummy_face)
+
+    print("[load_model] Warmup complete.")
+
     return model
 
 model = load_model("wav2lip_Chinese.pth")

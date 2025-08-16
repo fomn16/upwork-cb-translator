@@ -23,6 +23,9 @@ vocoder_name = "vocoder_v2" if model_name == "seamlessM4T_v2_large" else "vocode
 translator = Translator(model_name, vocoder_name, device=device, dtype=torch.float16)
 
 # this takes a while, but in my tests it cut the inference time by more than half
+import torch._dynamo
+torch._dynamo.config.cache_size_limit = 32  # higher compilation cache = more RAM usage, smaller response time
+
 # compiling model
 if hasattr(translator.model, "text_encoder") and translator.model.text_encoder is not None:
     print("compiling text_encoder")
@@ -45,6 +48,7 @@ if hasattr(translator, "vocoder") and translator.vocoder is not None:
     print("compiling vocoder")
     translator.vocoder = torch.compile(translator.vocoder)
 
+print('starting warmup, this can take up to 3.5 minutes.')
 warmup_phrases = [
     # Very short (1–3 words)
     "Hello.",
@@ -102,9 +106,17 @@ warmup_phrases = [
 
 total = 100
 goal = 20
-while(total > goal):
+iteration = 0
+
+while total > goal:
     a = time.perf_counter()
-    for phrase in warmup_phrases:
+    for idx, phrase in enumerate(warmup_phrases, start=1):
+        # Print progress on the same line
+        print(
+            f"Iteration {iteration}, sentence {idx}/{len(warmup_phrases)}: {phrase[:60]}...",
+            end="\r",
+            flush=True,
+        )
         with torch.inference_mode():
             translator.predict(
                 input=phrase,
@@ -113,7 +125,9 @@ while(total > goal):
                 src_lang="eng"
             )
     total = time.perf_counter() - a
-    print(f"warming up until the model takes {goal}s. Currently = {total}")
+    iteration += 1
+    # After finishing one full pass, print the timing result on a new line
+    print(f"\n[Iteration {iteration}] warming up until the model takes {goal}s. Currently = {total:.2f}s")
 
 print("translator loaded")
 

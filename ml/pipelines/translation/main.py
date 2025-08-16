@@ -13,6 +13,7 @@ import json
 import pickle
 
 import whisper_utils as wms
+from sentence_splitter import SentenceSplitter
 
 import os
 import sys
@@ -458,6 +459,8 @@ def process_translation_chunk_whisper(
 
 def initialize_whisper_for_session(session_id, lang="te"):
     """Initialize Whisper ASR for a given session."""
+
+    #segmenter = SentenceSplitter(lang=tgt_lang, use_gpu=True)  # use this tokenizer if results from the default one are not satisfactory
     class WhisperArgs:
         def __init__(self):
             self.language = lang
@@ -470,7 +473,7 @@ def initialize_whisper_for_session(session_id, lang="te"):
             self.backend = "faster-whisper"
             self.vac_chunk_size = 0.05
             self.vad = False
-            self.buffer_trimming = "segment"
+            self.buffer_trimming = "sentence"
             self.buffer_trimming_sec = 20
             self.log_level = "WARNING"
 

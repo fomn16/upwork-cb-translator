@@ -1,2 +1,2 @@
-torchaudio
-coqui-TTS
+torchaudio==2.8.0
+coqui-TTS==0.27.0
