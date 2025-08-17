@@ -440,7 +440,7 @@ def process_translation_chunk_whisper(
                         cloned_audio_bytes = tensor_to_bytes(clone_tensor)
                         translated_audio_bytes = resample_audio(cloned_audio_bytes, 22050, INTERNAL_SAMPLERATE)
                     else:
-                        samples, sr = get_raw_audio_pcm(audio_tensor, sr)
+                        samples, sr = get_raw_audio_pcm(audio_tensor, sr, stereo=False)
                         translated_audio_bytes = (samples.numpy() * 32767.0).astype(np.int16).T.tobytes()
                     output_function(translated_audio_bytes)
 

@@ -103,6 +103,7 @@ class Session:
                 available_video_frames = len(self.video_in)
 
                 # if video is disabled, just foward received audio
+                # TODO, send blank frame to avoid video freezing on last frame sent
                 if not self.settings.enable_video:
                     if available_audio_bytes > 0:
                         self.audio_out.enqueue(self.translated_audio_in.dequeue(available_audio_bytes))
@@ -113,7 +114,7 @@ class Session:
                     if available_audio_bytes > 0:
                         self.audio_out.enqueue(self.translated_audio_in.dequeue(available_audio_bytes))
                     if available_video_frames > 0:
-                        self.video_out.enqueue(self.video_in.dequeue(available_video_frames))
+                        self.video_out.enqueue(self.video_in.dequeue())
                     continue
 
                 # otherwise, do the lipsync processing

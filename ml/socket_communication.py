@@ -4,6 +4,8 @@ from subprocess import Popen
 from config.connection_config import *
 from lib.communication.session_settings import SessionSettings
 
+import copy
+
 audio_out_pipes: Dict[str, Popen[bytes]]= {}
 video_out_pipes: Dict[str, Popen[bytes]]= {}
 session_settings:Dict[str, SessionSettings] = {}
@@ -47,3 +49,8 @@ def send_settings(session_id:str, settings:SessionSettings):
         lipsync_translated_audio_socket.send_settings(session_id, settings)
         translate_socket.send_settings(session_id, settings)
     session_settings[session_id]=settings
+
+def get_current_settings(session_id:str):
+    if (session_id in session_settings):
+        return copy.copy(session_settings[session_id])
+    return None
