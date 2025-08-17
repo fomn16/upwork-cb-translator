@@ -13,6 +13,7 @@ import cv2
 
 from typing import Dict
 from lib.communication.communication_helper import CommunicationHelper
+from lib.communication.session_settings import SessionSettings
 from lib.queue.audio_queue import AudioQueue
 from lib.queue.video_queue import VideoQueue
 
@@ -21,11 +22,7 @@ from config.connection_config import *
 from config.lipsync_config import *
 from config.audio_config import *
 
-from collections import deque
-
 from helpers import *
-
-import math
 
 # used to avoid calculating every time
 VIDEO_INPUT_BUFFER_SIZE = MAX_LIPSYNC_MODEL_CHUNK_SECONDS*FRAME_RATE
@@ -34,9 +31,10 @@ AUDIO_INPUT_BUFFER_SIZE = MAX_LIPSYNC_MODEL_CHUNK_SECONDS*INTERNAL_SAMPLERATE*2 
 AUDIO_OUTPUT_BUFFER_SIZE = OUTPUT_QUEUE_SIZE_SECONDS*INTERNAL_SAMPLERATE*2
 
 class Session:
-    def __init__(self, session_id:str):
+    def __init__(self, session_id:str, settings:SessionSettings):
         self.closed = False
         self.session_id = session_id
+        self.settings = settings
 
         self.raw_audio_in = AudioQueue()
 
@@ -79,6 +77,9 @@ class Session:
         self.video_in.enqueue(frame)
         self.received_data.set()
 
+    def update_settings(self, settings:SessionSettings):
+        self.settings = settings
+
     def close(self):
         self.closed = True
         self.translated_audio_in.close()
@@ -92,18 +93,35 @@ class Session:
                 timeout = not self.received_data.wait(timeout=30)  # waits for data to be received, also has a timeout
                 if (self.raw_audio_in.closed or 
                     self.translated_audio_in.closed or 
-                    self.video_in.closed):  # IMPORTANT: must be refactored if audio/video is eventually optional
+                    self.video_in.closed or
+                    self.settings.closed):
                     break
                 if timeout:
                     continue  # if woke up due to timeout, goes to the next loop iteration
-
+                
+                available_audio_bytes = len(self.translated_audio_in)
                 available_video_frames = len(self.video_in)
+
+                # if video is disabled, just foward received audio
+                if not self.settings.enable_video:
+                    if available_audio_bytes > 0:
+                        self.audio_out.enqueue(self.translated_audio_in.dequeue(available_audio_bytes))
+                    continue
+                
+                # otherwise, if lipsync or translation are disabled, fowards both audio and video received
+                if not self.settings.enable_lip_sync or not self.settings.enable_translation:
+                    if available_audio_bytes > 0:
+                        self.audio_out.enqueue(self.translated_audio_in.dequeue(available_audio_bytes))
+                    if available_video_frames > 0:
+                        self.video_out.enqueue(self.video_in.dequeue(available_video_frames))
+                    continue
+
+                # otherwise, do the lipsync processing
                 if available_video_frames >= VIDEO_INPUT_BUFFER_SIZE:  # waits until there is enough video buffered on the input
-                    available_audio_bytes = len(self.translated_audio_in)
                     available_audio_time = available_audio_bytes / (2 * INTERNAL_SAMPLERATE)
                     available_video_time = available_video_frames / FRAME_RATE
 
-                    if available_audio_time > MAX_LIPSYNC_MODEL_CHUNK_SECONDS:
+                    if available_audio_time > MAX_LIPSYNC_MODEL_CHUNK_SECONDS: #if we have enough translated audio to do lipsync
                         while available_audio_time > MIN_LIPSYNC_MODEL_CHUNK_SECONDS and available_video_time > MIN_LIPSYNC_MODEL_CHUNK_SECONDS:
                             chunk_seconds = min(
                                 available_video_time,
@@ -142,8 +160,7 @@ class Session:
                             available_audio_time = available_audio_bytes / (2 * INTERNAL_SAMPLERATE)
                             available_video_time = available_video_frames / FRAME_RATE
 
-                    else:
-                        # No translated audio yet → pass video through
+                    else: # No translated audio yet → pass video through
                         video_frame = self.video_in.dequeue().copy()
                         f = self.face_positions.dequeue()  # still dequeue to keep queues in sync
                         if f is not None:
@@ -212,44 +229,54 @@ class Session:
                 time.sleep(sleep_time)
 
 class SessionManager:
-    sessions_dict: Dict[str, Session] = {}
-    def ensure_session_exists(self, session_id:str):
-        if session_id not in self.sessions_dict:
-            print(f"[Lip-Sync->SessionManager] Creating session with id {session_id}")
-            self.sessions_dict[session_id] = Session(session_id)
+    def __init__(self):
+        self.sessions: Dict[str, Session] = {}
+        self.lock = threading.Lock()
+
+    def is_initialized(self, session_id, settings:SessionSettings|None = None):
+        with self.lock:
+            if session_id not in self.sessions:     # if session was not created yet
+                if(settings is None):               # only create session on the first "receive_session_settings" call
+                    return False
+                self.sessions[session_id] = None    # stops other threads from trying to acces the session while its created below
+            else:
+                return self.sessions[session_id] is not None
+
+        session = Session(session_id, settings)
+
+        with self.lock:
+            self.sessions[session_id] = session
+        
+        return True
 
     def add_translated_audio_to_session(self, session_id, raw_bytes):
-        self.ensure_session_exists(session_id)
-        self.sessions_dict[session_id].add_translated_audio(raw_bytes)
+        if self.is_initialized(session_id):
+            self.sessions[session_id].add_translated_audio(raw_bytes)
 
     def add_raw_audio_to_session(self, session_id, raw_bytes):
-        self.ensure_session_exists(session_id)
-        self.sessions_dict[session_id].add_raw_audio(raw_bytes)
+        if self.is_initialized(session_id):
+            self.sessions[session_id].add_raw_audio(raw_bytes)
 
     def add_video_to_session(self, session_id, raw_bytes):
-        self.ensure_session_exists(session_id)
-        self.sessions_dict[session_id].add_video(raw_bytes)
+        if self.is_initialized(session_id):
+            self.sessions[session_id].add_video(raw_bytes)
 
-def raw_audio_received(session_id, raw_bytes):
-    global sessionManager
-    sessionManager.add_raw_audio_to_session(session_id, raw_bytes)
+    def close(self):
+        for sess in self.sessions.values():
+            sess.close()
 
-def translated_audio_received(session_id, raw_bytes):
-    global sessionManager
-    sessionManager.add_translated_audio_to_session(session_id, raw_bytes)
-
-def video_received(session_id, raw_bytes):
-    global sessionManager
-    sessionManager.add_video_to_session(session_id, raw_bytes)
+    def receive_session_settings(self, session_id:str, settings:SessionSettings):
+        if self.is_initialized(session_id, settings):   # on first call, this also initializes the session with the settings
+            self.sessions[session_id].update_settings(settings)
 
 if __name__ == "__main__":
-    raw_audio_socket = CommunicationHelper("raw_audio_socket", LIP_SYNC_RAW_AUDIO_IN_PORT, None, raw_audio_received)
-    translated_audio_socket = CommunicationHelper("translated_audio_socket", LIP_SYNC_TRANSLATED_AUDIO_IN_PORT, LIP_SYNC_AUDIO_OUT_PORT, translated_audio_received)
-    video_socket = CommunicationHelper("video_socket", LIP_SYNC_VIDEO_IN_PORT, LIP_SYNC_VIDEO_OUT_PORT, video_received)
-
     try:
         print("[Lip-Sync] Creating session manager")
-        sessionManager = SessionManager()
+        manager = SessionManager()
+
+        translated_audio_socket = CommunicationHelper("translated_audio_socket", LIP_SYNC_TRANSLATED_AUDIO_IN_PORT, LIP_SYNC_AUDIO_OUT_PORT, manager.add_translated_audio_to_session, manager.receive_session_settings)
+        raw_audio_socket = CommunicationHelper("raw_audio_socket", LIP_SYNC_RAW_AUDIO_IN_PORT, None, manager.add_raw_audio_to_session)
+        video_socket = CommunicationHelper("video_socket", LIP_SYNC_VIDEO_IN_PORT, LIP_SYNC_VIDEO_OUT_PORT, manager.add_video_to_session)
 
         while(raw_audio_socket.online and translated_audio_socket.online and video_socket.online):
             time.sleep(1)
@@ -258,3 +285,4 @@ if __name__ == "__main__":
         raw_audio_socket.close()
         translated_audio_socket.close()
         video_socket.close()
+        manager.close()

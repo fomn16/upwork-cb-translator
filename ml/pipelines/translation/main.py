@@ -494,7 +494,7 @@ def initialize_whisper_for_session(session_id, lang:str):
 
 CHUNK_SIZE_BYTES = INTERNAL_SAMPLERATE*2*TRANSLATION_CHUNK_SECONDS
 
-class SessionProcess:
+class Session:
     def __init__(self, session_id, audio_socket, settings: SessionSettings):
         self.session_id = session_id
         self.received_data = threading.Event()
@@ -595,7 +595,7 @@ class SessionManager:
             else:
                 return self.sessions[session_id] is not None
 
-        session = SessionProcess(session_id, self.audio_socket, settings)
+        session = Session(session_id, self.audio_socket, settings)
 
         with self.lock:
             self.sessions[session_id] = session
