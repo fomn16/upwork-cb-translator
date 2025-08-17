@@ -5,3 +5,4 @@ zmq==0.0.0
 torch==2.8.0
 torchaudio==2.8.0
 scipy==1.15.3
+pydantic==2.11.7

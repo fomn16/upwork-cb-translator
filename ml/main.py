@@ -5,7 +5,6 @@ from subprocess import Popen
 import threading
 import numpy as np
 from fastapi import FastAPI
-from pydantic import BaseModel
 import uvicorn
 import uuid
 import torch
@@ -17,6 +16,8 @@ from config.connection_config import *
 from config.audio_config import *
 
 from socket_communication import *
+
+from lib.communication.mediassoup_request import *
 
 # Initializes the file used to read input from the network
 def write_sdp_file(payload_type, codec_name, clock_rate, channels, rtp_port):
@@ -186,21 +187,14 @@ def pump_audio(
 # ----------------- FastAPI Server ----------------- #
 app = FastAPI()
 
-class TranslationRequest(BaseModel):
-    payloadType: int
-    codec: str
-    clockRate: int
-    channels: int
-    rtpPort: int
-    outputPort: int
-    ssrc: int
-    targetLang: str
-    sessionId: str
-
 @app.post("/translation/initiate")
 async def initiate_translation(data: TranslationRequest):
     global system, audio_out_pipes
     print("📥 Received translation initiation:", data.dict())
+
+    # sends initial settings to all enviromnents
+    send_settings(data.sessionId, SessionSettings(audio_request=data))
+
     sample_rate = data.clockRate
 
     # Sets up the read file from the rtp port provided by the client
@@ -398,15 +392,6 @@ def foward_frames_for_processing(
         except:
             pass
         print("✅ Frame fowarder stopped")
-
-class VideoCaptureRequest(BaseModel):
-    payloadType: int
-    codec: str
-    clockRate: int
-    rtpPort: int
-    outputPort: int
-    sessionId: str
-    ssrc: int
 
 @app.post("/video/initiate")
 async def initiate_video_capture(data: VideoCaptureRequest):

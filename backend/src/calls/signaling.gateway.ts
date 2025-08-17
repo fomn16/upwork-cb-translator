@@ -117,7 +117,7 @@ export class SignalingGateway implements OnGatewayInit {
         socket.emit('rtp-capabilities', rtpCapabilities);
     }
     
-    async setupBidirectionalConnection(socket:Socket, producer:Producer<AppData>, kind:"audio"|"video", targetLang:string): Promise<Producer<AppData> | null>{
+    async setupBidirectionalConnection(socket:Socket, producer:Producer<AppData>, kind:"audio"|"video", sourceLang:string, targetLang:string, userId:string): Promise<Producer<AppData> | null>{
         let processedProducer: Producer<AppData> | null = null;
         const sendTransport = await this.mediasoupService.createPlainTransport("send", kind);
         const recvTransport = await this.mediasoupService.createPlainTransport("recv", kind);
@@ -164,9 +164,11 @@ export class SignalingGateway implements OnGatewayInit {
             payloadType,
             ssrc,
             outputPort: recvTransport.tuple.localPort,
+            sourceLang,
             targetLang,
             sessionId,
             enableVoiceClone: connectionSettings.enableVoiceClone, // when this is updated to be selectable by the user, receive it as a parameter instead
+            userId
         };
 
         fetch(connectionSettings.processingServerUrl + connectionSettings.processingServerInitiateMethod, {
@@ -220,7 +222,10 @@ export class SignalingGateway implements OnGatewayInit {
                     socket.emit('produce-error', `Invalid media kind: ${kind}`);
                     return;
                 }
-                const targetLang = 'eng'; // Default target language
+                
+                // defaults
+                const sourceLang = 'en'
+                const targetLang = 'hin'
 
                 const producer = await transport.produce({
                     kind: kind as MediaKind,
@@ -228,7 +233,7 @@ export class SignalingGateway implements OnGatewayInit {
                 });
 
                 userProducers.set(`${socket.id}-${kind}`, producer);
-                let processedProducer = await this.setupBidirectionalConnection(socket, producer, kind, targetLang)
+                let processedProducer = await this.setupBidirectionalConnection(socket, producer, kind, sourceLang, targetLang, userId)
 
                 socket.join(roomCode);
                 if (!rooms.has(roomCode)) {

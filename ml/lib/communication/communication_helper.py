@@ -1,8 +1,9 @@
 import threading
-import time
 from typing import Callable
 import heapq
 import zmq
+from .session_settings import SessionSettings
+import pickle
 
 class CommunicationHelper:
     def __init__(
@@ -11,6 +12,7 @@ class CommunicationHelper:
         recv_port: int | None,
         send_port: int | None,
         recv_callback: Callable[[str, bytes], None],
+        recv_settings_callback: Callable[[str, SessionSettings], None] = None,
         run_in_another_thread: bool = True,
         com_method: str = "ipc",
         host: str = "127.0.0.1",
@@ -21,6 +23,7 @@ class CommunicationHelper:
         self._ctx = zmq.Context.instance()
         self._recv_sock = self._ctx.socket(zmq.PULL)
         self._recv_callback = recv_callback
+        self._recv_settings_callback = recv_settings_callback
         self._send_socks = []
         self._stop = threading.Event()
         self.online = True
@@ -71,7 +74,7 @@ class CommunicationHelper:
         with self.send_lock:
             self._send_socks.append(socket)
 
-    def send(self, conn_id: str, payload: bytes) -> None:
+    def send(self, conn_id: str, payload: bytes, settingsMessage=False) -> None:
         if self.send_lock is None:
             raise TypeError("send_port must be provided to send messages")
         if not isinstance(conn_id, str):
@@ -79,18 +82,27 @@ class CommunicationHelper:
         if not isinstance(payload, (bytes, bytearray, memoryview)):
             raise TypeError("payload must be bytes-like")
 
-        ### Get sequence number for this conn_id
-        seq = self._send_seq.get(conn_id, 0)
-        self._send_seq[conn_id] = (seq + 1) % (2**32)  # wrap-around safe
-
         header = conn_id.encode(self._encoding, errors=self._errors)
-        seq_bytes = seq.to_bytes(4, "big", signed=False)
+        type_bytes = settingsMessage.to_bytes(1, "big", signed=False)
+        
+        if(settingsMessage):
+            message = [header, type_bytes + bytes(payload)]
+        else:
+            ### Get sequence number for this conn_id
+            seq = self._send_seq.get(conn_id, 0)
+            self._send_seq[conn_id] = (seq + 1) % (2**32)  # wrap-around safe
+            seq_bytes = seq.to_bytes(4, "big", signed=False)
+            message = [header, type_bytes + seq_bytes + bytes(payload)]
 
         socket = self.borrow_socket()
         try:
-            socket.send_multipart([header, seq_bytes + bytes(payload)])
+            socket.send_multipart(message)
         finally:
             self.return_socket(socket)
+    
+    def send_settings(self, conn_id: str, payload:SessionSettings):
+        payload_bytes = pickle.dumps(payload, pickle.HIGHEST_PROTOCOL)
+        self.send(conn_id, payload_bytes, settingsMessage=True)
 
     def close(self) -> None:
         self._stop.set()
@@ -126,10 +138,16 @@ class CommunicationHelper:
                     conn_id = parts[0].decode(self._encoding, errors=self._errors)
                     payload = parts[1]
 
-                    seq = int.from_bytes(payload[:4], "big", signed=False)
-                    data = payload[4:]
+                    settingsMessage = bool.from_bytes(payload[:1], "big", signed=False)
 
-                    self._handle_incoming(conn_id, seq, data)
+                    if(settingsMessage):
+                        if(self._recv_settings_callback != None):
+                            settings = pickle.loads(payload[1:])
+                            self._recv_settings_callback(conn_id, settings)
+                    else:
+                        seq = int.from_bytes(payload[1:5], "big", signed=False)
+                        data = payload[5:]
+                        self._handle_incoming(conn_id, seq, data)
 
                 except zmq.Again:
                     continue

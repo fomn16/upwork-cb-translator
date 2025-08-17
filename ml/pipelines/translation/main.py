@@ -22,7 +22,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from lib.communication_helper import CommunicationHelper
+from lib.communication.communication_helper import CommunicationHelper
+from lib.communication.session_settings import SessionSettings
 from lib.queue.audio_queue import AudioQueue
 
 from config.connection_config import *
@@ -455,16 +456,16 @@ def process_translation_chunk_whisper(
         if output_function:
             output_function(audio_chunk)
 
-def initialize_whisper_for_session(session_id, lang="te"):
+def initialize_whisper_for_session(session_id, lang:str):
     """Initialize Whisper ASR for a given session."""
 
     #segmenter = SentenceSplitter(lang=tgt_lang, use_gpu=True)  # use this tokenizer if results from the default one are not satisfactory
     class WhisperArgs:
         def __init__(self):
-            self.language = lang
+            self.language = lang # this is the source language. target is either the same (if task == transcript) or english (task==translate)
             self.min_chunk_size = 0.3
             self.vac = True
-            self.model = "distil-large-v3"
+            self.model = "medium"
             self.task = "translate"
             self.model_cache_dir = None
             self.model_dir = None
@@ -494,22 +495,24 @@ def initialize_whisper_for_session(session_id, lang="te"):
 CHUNK_SIZE_BYTES = INTERNAL_SAMPLERATE*2*TRANSLATION_CHUNK_SECONDS
 
 class SessionProcess:
-    def __init__(self, session_id, audio_socket):
+    def __init__(self, session_id, audio_socket, settings: SessionSettings):
         self.session_id = session_id
-        self.closed = False
         self.received_data = threading.Event()
 
         self.audio_in = AudioQueue()
         self.audio_socket = audio_socket
-        self.speaker_id = 'felipe'
-        self.tgt_lang = 'hin'
 
-        initialize_whisper_for_session(session_id, lang='te')
+        self.settings = settings
+
+        initialize_whisper_for_session(session_id, lang=self.settings.source_language)
         
         threading.Thread(
             target=self.process,
             daemon=True,
         ).start()
+
+    def update_settings(self, settings: SessionSettings):
+        self.settings = settings
 
     def output(self, audio_bytes):
         self.audio_socket.send(self.session_id, audio_bytes)
@@ -522,7 +525,7 @@ class SessionProcess:
             embedding_counter = 0
             while True: 
                 timeout = not self.received_data.wait(timeout=30) # waits for data to be received, also has a timeout
-                if(self.audio_in.closed):
+                if(self.audio_in.closed or self.settings.closed):
                     break
                 if(timeout):
                     continue
@@ -531,7 +534,7 @@ class SessionProcess:
                     chunk_count += 1
                     seg = self.audio_in.dequeue(CHUNK_SIZE_BYTES)
                     #####################################################################################
-                    if ENABLE_VOICE_CLONE:
+                    if self.settings.enable_voice_clone:
                         # 🔁 Inside your while loop:
                         chunk_count, embedding_counter, speaker_id = process_voice_embedding_chunk(
                             seg=seg,
@@ -540,7 +543,7 @@ class SessionProcess:
                             audio_buffer=audio_buffer,
                             tensor_buffer=tensor_buffer,
                             embedding_counter=embedding_counter,
-                            speaker_id=self.speaker_id,  # ✅ Pass current speaker_id
+                            speaker_id=self.settings.user_id,  # ✅ Pass current speaker_id
                             save_audio=save_audio,
                             request_voice_embed=request_voice_embed,
                             bytes_to_float32_mono_array=bytes_to_float32_mono_array,
@@ -550,17 +553,20 @@ class SessionProcess:
                         )
                     ##############################################################
 
-                    if ENABLE_TRANSLATION:
+                    if self.settings.enable_translation:
                         process_translation_chunk_whisper(
                             seg,                            # audio chunk bytes
                             self.output,#output_queue,      # function that outputs audio bytes # (previously, your queue to receive transcriptions)
                             input_sr=INTERNAL_SAMPLERATE,   # input sample rate of the audio chunk
                             target_sr=INTERNAL_SAMPLERATE,  # sample rate expected by Whisper
-                            target_lang = self.tgt_lang,
-                            voice_clone_enabled = ENABLE_VOICE_CLONE,
+                            target_lang = self.settings.target_language,
+                            voice_clone_enabled = self.settings.enable_voice_clone,
                             session_id=self.session_id,
-                            speaker_id=speaker_id
+                            speaker_id=self.settings.user_id
                         )
+                    else: # if not translating, pass audio through
+                        self.output(seg)
+
         except Exception as e:
             print(f"[translate]: Error in processing thread: {e}")
             raise
@@ -568,7 +574,7 @@ class SessionProcess:
             self.close()
 
     def close(self):
-        self.closed = True
+        self.settings.closed = True
 
     def translate(self, audio_bytes):
         self.audio_in.enqueue(audio_bytes)
@@ -578,27 +584,43 @@ class SessionManager:
     def __init__(self):
         self.sessions = {}
         self.audio_socket = None
+        self.lock = threading.Lock()
 
-    def ensure_session(self, session_id):
-        if session_id not in self.sessions:
-            self.sessions[session_id] = SessionProcess(session_id, self.audio_socket)
+    def is_initialized(self, session_id, settings:SessionSettings|None = None):
+        with self.lock:
+            if session_id not in self.sessions:     # if session was not created yet
+                if(settings is None):               # only create session on the first "receive_session_settings" call
+                    return False
+                self.sessions[session_id] = None    # stops other threads from trying to acces the session while its created below
+            else:
+                return self.sessions[session_id] is not None
+
+        session = SessionProcess(session_id, self.audio_socket, settings)
+
+        with self.lock:
+            self.sessions[session_id] = session
+        
+        return True
 
     def translate(self, session_id, audio_bytes):
         if(self.audio_socket == None):
             return
-        
-        self.ensure_session(session_id)
-        self.sessions[session_id].translate(audio_bytes)
+        if self.is_initialized(session_id):
+            self.sessions[session_id].translate(audio_bytes)
 
-    def close_all(self):
+    def close(self):
         for sess in self.sessions.values():
             sess.close()
+
+    def receive_session_settings(self, session_id:str, settings:SessionSettings):
+        if self.is_initialized(session_id, settings):   # on first call, this also initializes the session with the settings
+            self.sessions[session_id].update_settings(settings)
 
 if __name__ == "__main__":
     try:
         print("[Translate] Creating session manager")
         sessionManager = SessionManager()
-        audio_socket = CommunicationHelper("audio_translate_socket", TRANSLATION_VOICE_CLONE_IN_PORT, TRANSLATION_VOICE_CLONE_OUT_PORT, sessionManager.translate)
+        audio_socket = CommunicationHelper("audio_translate_socket", TRANSLATION_VOICE_CLONE_IN_PORT, TRANSLATION_VOICE_CLONE_OUT_PORT, sessionManager.translate, sessionManager.receive_session_settings)
         sessionManager.audio_socket = audio_socket
 
         while(audio_socket.online):

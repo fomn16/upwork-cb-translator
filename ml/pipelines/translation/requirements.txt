@@ -8,3 +8,4 @@ zmq==0.0.0
 faster_whisper==1.2.0
 stanza==1.10.1
 mosestokenizer==1.2.1
+pydantic==2.11.7

@@ -12,7 +12,7 @@ import time
 import cv2
 
 from typing import Dict
-from lib.communication_helper import CommunicationHelper
+from lib.communication.communication_helper import CommunicationHelper
 from lib.queue.audio_queue import AudioQueue
 from lib.queue.video_queue import VideoQueue
 
