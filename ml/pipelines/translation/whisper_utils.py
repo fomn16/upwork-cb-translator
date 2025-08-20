@@ -123,10 +123,11 @@ class FasterWhisperASR(ASRBase):
 #        model = WhisperModel(modelsize, device="cpu", compute_type="int8") #, download_root="faster-disk-cache-dir/")
         return model
 
-    def transcribe(self, audio, init_prompt=""):
+    # this promt engineering is a bit dramatic, but it seems to work well
+    def transcribe(self, audio, init_prompt="The following professional transcription came from a serious business meeting about budgetting. Carefull and precise transcription was therefore essential. The scribe listened carefully and wrote down the following:"):
 
         # tested: beam_size=5 is faster and better than 1 (on one 200 second document from En ESIC, min chunk 0.01)
-        segments, info = self.model.transcribe(audio, language=self.original_language, initial_prompt=init_prompt, beam_size=5, word_timestamps=True, condition_on_previous_text=True, **self.transcribe_kargs)
+        segments, info = self.model.transcribe(audio, temperature = 0.0, language=self.original_language, initial_prompt=init_prompt, beam_size=10, word_timestamps=True, condition_on_previous_text=True, **self.transcribe_kargs)
         #print(info)  # info contains language detection result
 
         return list(segments)
@@ -134,9 +135,12 @@ class FasterWhisperASR(ASRBase):
     def ts_words(self, segments):
         o = []
         for segment in segments:
+            if segment.no_speech_prob is not None and segment.no_speech_prob > 0.7:
+                continue
+            # Drop if average logprob is too low (uncertain / hallucination)
+            if segment.avg_logprob is not None and segment.avg_logprob < -1.0:
+                continue
             for word in segment.words:
-                if segment.no_speech_prob > 0.9:
-                    continue
                 # not stripping the spaces -- should not be merged with them!
                 w = word.word
                 t = (word.start, word.end, w)

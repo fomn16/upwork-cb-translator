@@ -465,15 +465,15 @@ def initialize_whisper_for_session(session_id, lang:str):
             self.language = lang # this is the source language. target is either the same (if task == transcript) or english (task==translate)
             self.min_chunk_size = 0.3
             self.vac = True
-            self.model = "medium"
+            self.model = "large-v3"
             self.task = "translate"
             self.model_cache_dir = None
             self.model_dir = None
             self.backend = "faster-whisper"
             self.vac_chunk_size = 0.05
             self.vad = False
-            self.buffer_trimming = "sentence"
-            self.buffer_trimming_sec = 20
+            self.buffer_trimming = "segment"
+            self.buffer_trimming_sec = 15
             self.log_level = "WARNING"
 
     args = WhisperArgs()

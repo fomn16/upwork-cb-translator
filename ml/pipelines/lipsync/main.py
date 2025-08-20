@@ -123,12 +123,18 @@ class Session:
                     available_video_time = available_video_frames / FRAME_RATE
 
                     if available_audio_time > MAX_LIPSYNC_MODEL_CHUNK_SECONDS: #if we have enough translated audio to do lipsync
-                        while available_audio_time > MIN_LIPSYNC_MODEL_CHUNK_SECONDS and available_video_time > MIN_LIPSYNC_MODEL_CHUNK_SECONDS:
+                        while available_audio_time > 0 and available_video_time > MIN_LIPSYNC_MODEL_CHUNK_SECONDS:
                             chunk_seconds = min(
                                 available_video_time,
                                 available_audio_time,
                                 MAX_LIPSYNC_MODEL_CHUNK_SECONDS
                             )
+                            
+                            # If chunk is too short, pad it with silence
+                            audio_padding_needed = False
+                            if chunk_seconds < MIN_LIPSYNC_MODEL_CHUNK_SECONDS:
+                                chunk_seconds = MIN_LIPSYNC_MODEL_CHUNK_SECONDS
+                                audio_padding_needed = True
 
                             video_frames_to_process = int(round(chunk_seconds * FRAME_RATE))
                             audio_bytes_to_process = int(round(chunk_seconds * INTERNAL_SAMPLERATE)) * 2
@@ -143,6 +149,15 @@ class Session:
                                 positions_for_lipsync.append(self.face_positions.dequeue())
 
                             audio_for_lipsync = self.translated_audio_in.dequeue(audio_bytes_to_process)
+                            
+                            # Pad audio if needed
+                            if audio_padding_needed:
+                                expected_samples = int(MIN_LIPSYNC_MODEL_CHUNK_SECONDS * INTERNAL_SAMPLERATE)
+                                current_samples = len(audio_for_lipsync) // 2  # 16-bit PCM = 2 bytes/sample
+                                if current_samples < expected_samples:
+                                    pad_samples = expected_samples - current_samples
+                                    silence = (np.zeros(pad_samples, dtype=np.int16)).tobytes()
+                                    audio_for_lipsync += silence
 
                             synced_video = run_lipsync_from_frames(
                                 video_for_lipsync,
