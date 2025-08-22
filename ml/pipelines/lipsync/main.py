@@ -63,6 +63,15 @@ class Session:
             daemon=True,
         ).start()
 
+    def generate_empty_audio(self):
+        # === Enqueue matching silent audio ===
+        # Duration of one frame in seconds
+        frame_duration_sec = 1.0 / FRAME_RATE
+        # Number of audio samples for that duration
+        num_samples = int(round(frame_duration_sec * INTERNAL_SAMPLERATE))
+        # Create silent audio (16-bit PCM, so 2 bytes per sample)
+        return (np.zeros(num_samples, dtype=np.int16)).tobytes()
+    
     # raw audio is not used for now
     def add_raw_audio(self, audio_bytes):
         #self.raw_audio_in.enqueue(audio_bytes)
@@ -70,12 +79,15 @@ class Session:
 
     def add_translated_audio(self, audio_bytes):
         self.translated_audio_in.enqueue(audio_bytes)
+        if not self.settings.enable_video: # audio takes charge of setting the received_data flag when video is disabled
+            self.received_data.set()
 
     def add_video(self, video_bytes):
-        frame = np.frombuffer(video_bytes, np.uint8).reshape((FRAME_HEIGHT,FRAME_WIDTH, 3))
-        self.face_positions.enqueue(frame)
-        self.video_in.enqueue(frame)
-        self.received_data.set()
+        if self.settings.enable_video: # only enqueue video if the video is enabled
+            frame = np.frombuffer(video_bytes, np.uint8).reshape((FRAME_HEIGHT,FRAME_WIDTH, 3))
+            self.face_positions.enqueue(frame)
+            self.video_in.enqueue(frame)
+            self.received_data.set()
 
     def update_settings(self, settings:SessionSettings):
         self.settings = settings
@@ -182,17 +194,9 @@ class Session:
                         if f is not None:
                             x1, y1, x2, y2 = f
                             cv2.rectangle(video_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-                        # === Enqueue matching silent audio ===
-                        # Duration of one frame in seconds
-                        frame_duration_sec = 1.0 / FRAME_RATE
-                        # Number of audio samples for that duration
-                        num_samples = int(round(frame_duration_sec * INTERNAL_SAMPLERATE))
-                        # Create silent audio (16-bit PCM, so 2 bytes per sample)
-                        silent_audio = (np.zeros(num_samples, dtype=np.int16)).tobytes()
                         
                         self.video_out.enqueue(video_frame)
-                        self.audio_out.enqueue(silent_audio)
+                        self.audio_out.enqueue(self.generate_empty_audio())
 
         except Exception as e:
             print(f"Error in processing thread: {e}")
@@ -207,9 +211,11 @@ class Session:
         while not self.closed:
             target_time = start_time + frame_index * AUDIO_CHUNK_DURATION
             frame_index += 1
-            audio = self.audio_out.dequeue(INTERNAL_N_AUDIO_CHUNK_BYTES)
+            audio = self.audio_out.dequeue(INTERNAL_N_AUDIO_CHUNK_BYTES, timeout=AUDIO_CHUNK_DURATION*0.9) # blocks for slightly less than the sample rate in the worst case (90%)
             if audio:
                 translated_audio_socket.send(self.session_id, audio)
+            else:
+                translated_audio_socket.send(self.session_id, self.generate_empty_audio())
 
             sleep_time = target_time - time.perf_counter()
             if sleep_time > 0:
