@@ -37,15 +37,17 @@ if(COMPILE_MODELS):
         print("compiling speech_encoder")
         translator.model.speech_encoder = torch.compile(translator.model.speech_encoder)
 
-    if hasattr(translator.model, "t2u_model") and translator.model.t2u_model is not None:
+    # there are a lot of problems if we compile this part of the model
+    '''if hasattr(translator.model, "t2u_model") and translator.model.t2u_model is not None:
         print("compiling t2u_model")
-        translator.model.t2u_model = torch.compile(translator.model.t2u_model)
+        translator.model.t2u_model = torch.compile(translator.model.t2u_model)'''
 
     if hasattr(translator.model, "u2u_model") and translator.model.u2u_model is not None:
         print("compiling u2u_model")
         translator.model.u2u_model = torch.compile(translator.model.u2u_model)
 
     # Compile the vocoder if it exists
+    # TODO, test if this decreases audio quality
     if hasattr(translator, "vocoder") and translator.vocoder is not None:
         print("compiling vocoder")
         translator.vocoder = torch.compile(translator.vocoder)
