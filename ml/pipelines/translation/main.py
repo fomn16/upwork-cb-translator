@@ -211,16 +211,8 @@ def convert_audio_format(audio_chunk: bytes, input_sr: int = INTERNAL_SAMPLERATE
         # Convert bytes to numpy array (assuming int16 stereo)
         audio_data = np.frombuffer(audio_chunk, dtype=np.int16)
         
-        # Reshape to stereo (2 channels) and convert to mono by averaging
-        if len(audio_data) % 2 == 0:
-            stereo_data = audio_data.reshape(-1, 2)
-            mono_data = np.mean(stereo_data, axis=1)
-        else:
-            # If odd number of samples, take every other sample (simple downmix)
-            mono_data = audio_data[::2]
-        
         # Convert to float32 and normalize to [-1, 1]
-        mono_float = mono_data.astype(np.float32) / 32768.0
+        mono_float = audio_data.astype(np.float32) / 32768.0
         
         # Resample if needed
         if input_sr != target_sr:

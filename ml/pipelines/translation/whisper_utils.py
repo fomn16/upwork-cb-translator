@@ -127,7 +127,21 @@ class FasterWhisperASR(ASRBase):
     def transcribe(self, audio, init_prompt="The following professional transcription came from a serious business meeting about budgetting. Carefull and precise transcription was therefore essential. The scribe listened carefully and wrote down the following:"):
 
         # tested: beam_size=5 is faster and better than 1 (on one 200 second document from En ESIC, min chunk 0.01)
-        segments, info = self.model.transcribe(audio, temperature = 0.0, language=self.original_language, initial_prompt=init_prompt, beam_size=10, word_timestamps=True, condition_on_previous_text=True, **self.transcribe_kargs)
+        segments, info = self.model.transcribe(
+            audio,
+            **self.transcribe_kargs,
+            temperature = 0.0,
+            language=self.original_language,
+            initial_prompt=init_prompt,
+            beam_size=10,
+            word_timestamps=True,
+            condition_on_previous_text=True,
+            repetition_penalty=1.5,
+            no_repeat_ngram_size=4,
+            compression_ratio_threshold=2.0,
+            no_speech_threshold=0.75,
+            hallucination_silence_threshold=2,
+            vad_filter=True)
         #print(info)  # info contains language detection result
 
         return list(segments)
