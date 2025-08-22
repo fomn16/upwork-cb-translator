@@ -134,7 +134,7 @@ class Session:
                     available_audio_time = available_audio_bytes / (2 * INTERNAL_SAMPLERATE)
                     available_video_time = available_video_frames / FRAME_RATE
 
-                    if available_audio_time > MAX_LIPSYNC_MODEL_CHUNK_SECONDS: #if we have enough translated audio to do lipsync
+                    if available_audio_time > 0:
                         while available_audio_time > 0 and available_video_time > MIN_LIPSYNC_MODEL_CHUNK_SECONDS:
                             chunk_seconds = min(
                                 available_video_time,
