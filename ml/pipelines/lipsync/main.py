@@ -48,6 +48,8 @@ class Session:
         self.audio_out = AudioQueue()
         self.video_out = VideoQueue()
 
+        self.empty_audio_chunk = self.generate_empty_audio()
+
         threading.Thread(
             target=self.process,
             daemon=True,
@@ -78,16 +80,22 @@ class Session:
         pass
 
     def add_translated_audio(self, audio_bytes):
-        self.translated_audio_in.enqueue(audio_bytes)
-        if not self.settings.enable_video: # audio takes charge of setting the received_data flag when video is disabled
-            self.received_data.set()
+        #if the lipsync doesnt need to be applied, fowards audio directly to the output
+        if self.settings.enable_video and self.settings.enable_translation and self.settings.enable_lip_sync:
+            self.translated_audio_in.enqueue(audio_bytes)
+        else:
+            self.audio_out.enqueue(audio_bytes)
 
     def add_video(self, video_bytes):
-        if self.settings.enable_video: # only enqueue video if the video is enabled
+        # TODO, send blank frame to avoid video freezing on last frame sent if video is disabled mid-call
+        if self.settings.enable_video: # only enqueue if the video is enabled
             frame = np.frombuffer(video_bytes, np.uint8).reshape((FRAME_HEIGHT,FRAME_WIDTH, 3))
-            self.face_positions.enqueue(frame)
-            self.video_in.enqueue(frame)
-            self.received_data.set()
+            if(self.settings.enable_translation and self.settings.enable_lip_sync): # if lipsync must be applied, sends the video to the input queue
+                self.face_positions.enqueue(frame)
+                self.video_in.enqueue(frame)
+                self.received_data.set()
+            else:   # otherwise, bypasses the lipsync code entirely
+                self.video_out.enqueue(frame)
 
     def update_settings(self, settings:SessionSettings):
         self.settings = settings
@@ -113,23 +121,6 @@ class Session:
                 
                 available_audio_bytes = len(self.translated_audio_in)
                 available_video_frames = len(self.video_in)
-
-                # if video is disabled, just foward received audio
-                # TODO, send blank frame to avoid video freezing on last frame sent
-                if not self.settings.enable_video:
-                    if available_audio_bytes > 0:
-                        self.audio_out.enqueue(self.translated_audio_in.dequeue(available_audio_bytes))
-                    continue
-                
-                # otherwise, if lipsync or translation are disabled, fowards both audio and video received
-                if not self.settings.enable_lip_sync or not self.settings.enable_translation:
-                    if available_audio_bytes > 0:
-                        self.audio_out.enqueue(self.translated_audio_in.dequeue(available_audio_bytes))
-                    if available_video_frames > 0:
-                        self.video_out.enqueue(self.video_in.dequeue())
-                    continue
-
-                # otherwise, do the lipsync processing
                 if available_video_frames >= VIDEO_INPUT_BUFFER_SIZE:  # waits until there is enough video buffered on the input
                     available_audio_time = available_audio_bytes / (2 * INTERNAL_SAMPLERATE)
                     available_video_time = available_video_frames / FRAME_RATE
@@ -196,7 +187,7 @@ class Session:
                             cv2.rectangle(video_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         
                         self.video_out.enqueue(video_frame)
-                        self.audio_out.enqueue(self.generate_empty_audio())
+                        self.audio_out.enqueue(self.empty_audio_chunk)
 
         except Exception as e:
             print(f"Error in processing thread: {e}")
@@ -211,11 +202,9 @@ class Session:
         while not self.closed:
             target_time = start_time + frame_index * AUDIO_CHUNK_DURATION
             frame_index += 1
-            audio = self.audio_out.dequeue(INTERNAL_N_AUDIO_CHUNK_BYTES, timeout=AUDIO_CHUNK_DURATION*0.9) # blocks for slightly less than the sample rate in the worst case (90%)
+            audio = self.audio_out.dequeue(INTERNAL_N_AUDIO_CHUNK_BYTES, timeout=AUDIO_CHUNK_DURATION/2) # blocks for half the send rate in the worst case
             if audio:
                 translated_audio_socket.send(self.session_id, audio)
-            else:
-                translated_audio_socket.send(self.session_id, self.generate_empty_audio())
 
             sleep_time = target_time - time.perf_counter()
             if sleep_time > 0:
