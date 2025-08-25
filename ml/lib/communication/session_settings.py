@@ -12,6 +12,7 @@ class SessionSettings:
     target_language:str
     user_id:str|None
     closed: bool
+    camera_rotation:int
 
     def __init__(self, video_request:VideoCaptureRequest|None = None, audio_request: TranslationRequest|None = None):
         # defaults
@@ -23,8 +24,9 @@ class SessionSettings:
         self.target_language = 'hin'
         self.user_id = None
         self.closed = False
+        self.camera_rotation = 0
 
-        #received on fist connection from mediassoup, prioritizing settings received in audio connection
+        #received on fist connection from mediassoup, prioritizing settings received in audio connection (less latency)
         if audio_request is not None:
             if audio_request.sourceLang is not None:
                 self.source_language = audio_request.sourceLang
@@ -34,6 +36,9 @@ class SessionSettings:
 
             if audio_request.userId is not None:
                 self.user_id = audio_request.userId
+
+            if audio_request.cameraRotation is not None:
+                self.camera_rotation = audio_request.cameraRotation
 
         elif video_request is not None:
             pass # For now, no settings are received by the video connection

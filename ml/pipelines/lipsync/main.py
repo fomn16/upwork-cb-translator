@@ -107,6 +107,43 @@ class Session:
         self.video_in.close()
         self.face_positions.close()
 
+
+    def draw_debug_arrow(self, video_frame, x1, y1, x2, y2):
+        # --- Rotation-aware indicator (arrow pointing outward) ---
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+
+        # Define anchor points (on the box edges)
+        pts = [
+            (cx, y1),  # top center
+            (x1, cy),  # left center
+            (cx, y2),  # bottom center
+            (x2, cy),  # right center
+        ]
+
+        # Pick the active point based on rotation
+        idx = self.settings.camera_rotation % 4
+        px, py = pts[idx]
+
+        # Define outward offset for arrow start (so arrow points outward from (px, py))
+        offset = 40
+        if idx == 0:
+            start = (px, py - offset)
+        elif idx == 1:
+            start = (px - offset, py)
+        elif idx == 2:
+            start = (px, py + offset)
+        elif idx == 3:
+            start = (px + offset, py)
+
+        # Draw arrow pointing outward from the box
+        cv2.arrowedLine(
+            video_frame,
+            (px, py), start,    # arrow from box edge → outward
+            (0, 0, 255),        # red
+            2,                  # thickness
+            tipLength=0.4       # relative size of arrowhead
+        )
+
     def process(self):
         try:
             while True: 
@@ -165,7 +202,8 @@ class Session:
                             synced_video = run_lipsync_from_frames(
                                 video_for_lipsync,
                                 audio_for_lipsync,
-                                positions_for_lipsync
+                                positions_for_lipsync,
+                                self.settings.camera_rotation
                             )
 
                             for synced_video_frame in synced_video:
@@ -179,13 +217,15 @@ class Session:
                             available_audio_time = available_audio_bytes / (2 * INTERNAL_SAMPLERATE)
                             available_video_time = available_video_frames / FRAME_RATE
 
-                    else: # No translated audio yet → pass video through
+                    else:  # No translated audio yet → pass video through
                         video_frame = self.video_in.dequeue().copy()
                         f = self.face_positions.dequeue()  # still dequeue to keep queues in sync
                         if f is not None:
                             x1, y1, x2, y2 = f
                             cv2.rectangle(video_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        
+
+                            self.draw_debug_arrow(video_frame, x1,y1,x2,y2)
+
                         self.video_out.enqueue(video_frame)
                         self.audio_out.enqueue(self.empty_audio_chunk)
 

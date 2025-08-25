@@ -293,7 +293,59 @@ def run_inference(gen, mel_chunks: list) -> list:
     print(f"[stream] Inference complete. Frames written: {frames_written}")
     return frames_output
 
-def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect):
+
+def rotate_frame_and_coords(frame, coords, rotation: int):
+    """
+    Rotate a frame and its face detection coords clockwise.
+    rotation: 0=0°, 1=90° CW, 2=180°, 3=270° CW
+    """
+    if rotation == 0:
+        return frame, coords
+
+    h, w = frame.shape[:2]
+
+    if rotation == 1:  # 90° CW
+        frame_rot = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        if coords is not None:
+            x1, y1, x2, y2 = coords
+            coords_rot = (h - y2, x1, h - y1, x2)
+        else:
+            coords_rot = None
+
+    elif rotation == 2:  # 180°
+        frame_rot = cv2.rotate(frame, cv2.ROTATE_180)
+        if coords is not None:
+            x1, y1, x2, y2 = coords
+            coords_rot = (w - x2, h - y2, w - x1, h - y1)
+        else:
+            coords_rot = None
+
+    elif rotation == 3:  # 270° CW (== 90° CCW)
+        frame_rot = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        if coords is not None:
+            x1, y1, x2, y2 = coords
+            coords_rot = (y1, w - x2, y2, w - x1)
+        else:
+            coords_rot = None
+
+    return frame_rot, coords_rot
+
+
+def unrotate_frame(frame, rotation: int):
+    """
+    Undo clockwise rotation on a frame.
+    rotation: 0=0°, 1=90° CW, 2=180°, 3=270° CW
+    """
+    if rotation == 0:
+        return frame
+    elif rotation == 1:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif rotation == 2:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    elif rotation == 3:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    
+def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect, rotation:int):
     if not frame_buffer or not audio_bytes:
         print("WARNING: Empty frames or audio. Skipping lipsync.")
         return frame_buffer
@@ -314,11 +366,24 @@ def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect):
         print("[stream] Skipping lipsync: mel chunk too short")
         return frame_buffer
 
+    if rotation != 0:
+        rotated_frames, rotated_coords = [], []
+        for f, c in zip(frame_buffer, face_detect):
+            f_rot, c_rot = rotate_frame_and_coords(f, c, rotation)
+            rotated_frames.append(f_rot)
+            rotated_coords.append(c_rot)
+        frame_buffer, face_detect = rotated_frames, rotated_coords
+
     # 3. Prepare generator (mel stays on GPU)
     gen = datagen(frame_buffer, mel_chunks, face_detect)
 
     # 4. Run inference (mixed precision)
-    return run_inference(gen, mel_chunks)
+    output_frames =  run_inference(gen, mel_chunks)
+
+    if rotation != 0:
+        output_frames = [unrotate_frame(f, rotation) for f in output_frames]
+
+    return output_frames
 
 print("Loading MediaPipe Face Detector (GPU)...")
 

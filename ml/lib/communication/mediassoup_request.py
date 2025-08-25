@@ -21,3 +21,4 @@ class TranslationRequest(BaseModel):
     targetLang: str
     sessionId: str
     userId: str
+    cameraRotation:int
