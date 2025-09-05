@@ -203,7 +203,8 @@ class Session:
                                 video_for_lipsync,
                                 audio_for_lipsync,
                                 positions_for_lipsync,
-                                self.settings.camera_rotation
+                                self.settings.camera_rotation,
+                                self.session_id
                             )
 
                             for synced_video_frame in synced_video:

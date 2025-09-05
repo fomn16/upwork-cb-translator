@@ -198,23 +198,45 @@ def preprocess_audio(audio_bytes: bytes) -> torch.Tensor:
     mel = torch.log(torch.clamp(mel, min=1e-5))  # log-mel
     return mel.squeeze(0)  # [n_mels, time]
 
-def create_mel_chunks(mel: torch.Tensor, frame_rate: float, step_size: int = 16) -> list:
+def create_mel_chunks(
+    mel: torch.Tensor, num_video_frames: int, step_size: int = 16
+) -> list[torch.Tensor]:
+    """
+    Create mel spectrogram chunks aligned with video frames.
+    Ensures the number of chunks == number of video frames,
+    allowing small overlaps if necessary.
+
+    Args:
+        mel (torch.Tensor): Mel spectrogram of shape (n_mels, T).
+        num_video_frames (int): Number of video frames (e.g., 15 for 1s at 15fps).
+        step_size (int): Number of mel frames per chunk (default=16).
+
+    Returns:
+        list[torch.Tensor]: List of mel chunks, one per video frame.
+    """
     mel_chunks = []
-    mel_idx_multiplier = 80.0 / frame_rate
+    mel_len = mel.shape[1]
 
     # Pad mel if too short
-    if mel.shape[1] < step_size:
-        pad_width = step_size - mel.shape[1]
-        mel = torch.nn.functional.pad(mel, (0, pad_width))
+    if mel_len < step_size:
+        mel = torch.nn.functional.pad(mel, (0, step_size - mel_len))
+        mel_len = mel.shape[1]
 
-    i = 0
-    while True:
-        start_idx = int(i * mel_idx_multiplier)
-        if start_idx + step_size > mel.shape[1]:
-            mel_chunks.append(mel[:, -step_size:])
-            break
-        mel_chunks.append(mel[:, start_idx:start_idx + step_size])
-        i += 1
+    # Spread mel frames evenly across video frames
+    mel_idx_multiplier = mel_len / num_video_frames
+
+    for i in range(num_video_frames):
+        start_idx = int(round(i * mel_idx_multiplier))
+        end_idx = start_idx + step_size
+
+        if end_idx > mel_len:
+            # If we run past the end, just take the last step_size frames
+            chunk = mel[:, -step_size:]
+        else:
+            chunk = mel[:, start_idx:end_idx]
+
+        mel_chunks.append(chunk)
+
     return mel_chunks
 
 def match_frames_to_mels(frames: list, mel_chunks: list, tolerance: int = 3) -> list:
@@ -344,26 +366,66 @@ def unrotate_frame(frame, rotation: int):
         return cv2.rotate(frame, cv2.ROTATE_180)
     elif rotation == 3:
         return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-    
-def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect, rotation:int):
+
+def adjust_length_to_match(seq, target_len):
+    """
+    Adjusts a list (frames or mel chunks) to match target_len.
+    If seq is shorter, repeats elements at equal spacing.
+    If seq is longer, removes elements at equal spacing.
+    """
+    current_len = len(seq)
+    if current_len == target_len:
+        return seq
+
+    adjusted = []
+    if current_len < target_len:
+        # Need to duplicate some elements
+        repeats = target_len - current_len
+        # Spread duplicates evenly
+        indices_to_duplicate = set(
+            round(i * current_len / repeats) for i in range(repeats)
+        )
+        dup_count = 0
+        for i, item in enumerate(seq):
+            adjusted.append(item)
+            if i in indices_to_duplicate:
+                adjusted.append(item)
+                dup_count += 1
+        # If still short (rounding), pad with last element
+        while len(adjusted) < target_len:
+            adjusted.append(seq[-1])
+    else:
+        # Need to drop some elements
+        drops = current_len - target_len
+        indices_to_drop = set(
+            round(i * current_len / drops) for i in range(drops)
+        )
+        for i, item in enumerate(seq):
+            if i not in indices_to_drop:
+                adjusted.append(item)
+
+    return adjusted
+
+def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect, rotation:int, session_id):
     if not frame_buffer or not audio_bytes:
         print("WARNING: Empty frames or audio. Skipping lipsync.")
         return frame_buffer
 
-    print(f"[stream] Received {len(frame_buffer)} frames")
+    print(f"[stream {session_id}] Received {len(frame_buffer)} frames and {len(audio_bytes)} samples")
 
     # 1. Audio preprocessing (GPU)
     audio_start = time.time()
     mel_gpu = preprocess_audio(audio_bytes)  # [n_mels, time] on GPU
-    print(f"[stream] Audio processed in {time.time() - audio_start:.2f}s")
+    print(f"[stream {session_id}] mel_gpu = {len(mel_gpu)}")
+    #print(f"[stream] Audio processed in {time.time() - audio_start:.2f}s")
 
     # 2. Mel chunk creation (GPU)
-    mel_chunks = create_mel_chunks(mel_gpu, FRAME_RATE)
-    print(f"[stream] Mel chunks: {len(mel_chunks)}")
+    mel_chunks = create_mel_chunks(mel_gpu, len(frame_buffer))
+    print(f"[stream {session_id}] Mel chunks: {len(mel_chunks)}")
 
     # Skip if mel chunk too short for model
     if mel_chunks[0].shape[1] < 3:
-        print("[stream] Skipping lipsync: mel chunk too short")
+        print(f"[stream {session_id}] Skipping lipsync: mel chunk too short")
         return frame_buffer
 
     if rotation != 0:
@@ -379,9 +441,17 @@ def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect, rotation:int
 
     # 4. Run inference (mixed precision)
     output_frames =  run_inference(gen, mel_chunks)
-
+    print(f"[stream {session_id}] Returning {len(output_frames)} frames")
     if rotation != 0:
         output_frames = [unrotate_frame(f, rotation) for f in output_frames]
+
+    # 5. Adjusting number of returned frames in case its different from the number of received frames
+    if len(output_frames) != len(frame_buffer):
+        print(
+            f"[stream {session_id}] Adjusting output frames "
+            f"({len(output_frames)} → {len(frame_buffer)})"
+        )
+        output_frames = adjust_length_to_match(output_frames, len(frame_buffer))
 
     return output_frames
 
