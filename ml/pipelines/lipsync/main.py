@@ -126,7 +126,7 @@ class Session:
                         if(self.last_sent_translation > last_vad_time): # if it happened after we detected speech
                             detected_delay = self.last_sent_translation - last_vad_time
                             if(detected_delay <= DELAY_ESTIMATOR_MAX_VIDEO_DELAY_SECONDS):
-                                translation_delay_target = detected_delay   # set the target delay to the detected delay
+                                translation_delay_target = detected_delay + DELAY_ESTIMATOR_STATIC_DELAY   # set the target delay to the detected delay
 
                             # transition state
                             last_vad_time=None
