@@ -309,16 +309,18 @@ class Session:
                             available_video_time = available_video_frames / FRAME_RATE
 
                     else:  # No translated audio yet → pass video through
-                        video_frame = self.video_in.dequeue().copy()
-                        f = self.face_positions.dequeue()  # still dequeue to keep queues in sync
-                        if f is not None:
-                            x1, y1, x2, y2 = f
-                            cv2.rectangle(video_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        while(available_video_time >= self.translation_delay):
+                            video_frame = self.video_in.dequeue().copy()
+                            f = self.face_positions.dequeue()  # still dequeue to keep queues in sync
+                            if f is not None:
+                                x1, y1, x2, y2 = f
+                                cv2.rectangle(video_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-                            self.draw_debug_arrow(video_frame, x1,y1,x2,y2)
+                                self.draw_debug_arrow(video_frame, x1,y1,x2,y2)
 
-                        self.video_out.enqueue(video_frame)
-                        self.audio_out.enqueue(self.empty_audio_chunk)
+                            self.video_out.enqueue(video_frame)
+                            self.audio_out.enqueue(self.empty_audio_chunk)
+                            available_video_time = len(self.video_in) / FRAME_RATE
 
         except Exception as e:
             print(f"Error in processing thread: {e}")
@@ -338,6 +340,11 @@ class Session:
                 translated_audio_socket.send(self.session_id, audio)
 
             sleep_time = target_time - time.perf_counter()
+
+            # Slight speed-up if buffer is too full
+            if len(self.audio_out) > AUDIO_OUTPUT_BUFFER_SIZE:
+                sleep_time *= 0.9
+
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
