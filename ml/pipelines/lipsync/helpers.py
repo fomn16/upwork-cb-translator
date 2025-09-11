@@ -577,3 +577,47 @@ class FaceDetectProcessor:
                     self.out_queue.append(face_location)
         finally:
             self.close()
+
+
+# VAD utils
+_silero_vad_model, _silero_vad_utils = torch.hub.load(
+    repo_or_dir='snakers4/silero-vad',
+    model='silero_vad',
+    force_reload=False,
+    onnx=False,
+    trust_repo=True
+)
+_silero_vad_model = _silero_vad_model.to(device)
+
+def detect_speech_in_bytes(
+    audio_bytes: bytes,
+    sampling_rate: int = 16000,
+    threshold: float = 0.5,
+    min_speech_duration_ms: int = 250,
+    min_silence_duration_ms: int = 500,
+) -> float | None:
+    """
+    Detect the amount of time between end of audio and first detected speech.
+    """
+    global _silero_vad_model, _silero_vad_utils, device
+    get_speech_timestamps, _, _, _, _ = _silero_vad_utils
+    
+    audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+    wav = torch.from_numpy(audio_np / 32768.0).to(device)
+
+    # --- Run VAD ---
+    speech_timestamps = get_speech_timestamps(
+        wav,
+        _silero_vad_model,
+        sampling_rate=sampling_rate,
+        threshold=threshold,
+        min_speech_duration_ms=min_speech_duration_ms,
+        min_silence_duration_ms=min_silence_duration_ms,
+    )
+
+    if not speech_timestamps:
+        return None
+
+    clip_length_sec = len(audio_np) / float(sampling_rate)
+    first_speech_start_sec = speech_timestamps[0]["start"] / float(sampling_rate)
+    return clip_length_sec - first_speech_start_sec

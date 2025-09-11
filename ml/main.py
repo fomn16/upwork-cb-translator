@@ -172,8 +172,8 @@ def pump_audio(
                 print("empty chunk, stopping")
                 break
             seg_converted = to_internal_format(seg, EXTERNAL_SAMPLERATE)
-            #lipsync_raw_audio_socket.send(session_id, seg)
             translate_socket.send(session_id, seg_converted)
+            lipsync_raw_audio_socket.send(session_id, seg_converted)
     finally:
         ff_in.stdout.close()
         ff_out.stdin.close()
