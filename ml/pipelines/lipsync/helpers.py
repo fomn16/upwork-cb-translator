@@ -445,6 +445,11 @@ def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect, rotation:int
     if rotation != 0:
         output_frames = [unrotate_frame(f, rotation) for f in output_frames]
 
+    # inserting original frames in same positions in which no face detection was found
+    for i, detect in enumerate(face_detect):
+        if detect == None:
+            output_frames.insert(i,frame_buffer[i])
+
     # 5. Adjusting number of returned frames in case its different from the number of received frames
     if len(output_frames) != len(frame_buffer):
         print(
