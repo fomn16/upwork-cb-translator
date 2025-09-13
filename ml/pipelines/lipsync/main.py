@@ -66,6 +66,7 @@ class Session:
 
         # variables and thread for controlling translation delay
         self.translation_delay = MAX_LIPSYNC_MODEL_CHUNK_SECONDS
+        self.translation_delay_target = self.translation_delay
         self.polling_raw_audio = False
         self.last_sent_translation = None
 
@@ -73,6 +74,13 @@ class Session:
             target=self.estimate_translation_delay,
             daemon=True,
         ).start()
+
+    # smoothly adjusting the video delay based on current and target
+    def interpolate_delay(self):
+        while(True):
+            print(f'current video delay = {self.translation_delay}, target = {self.translation_delay_target}')
+            self.translation_delay += DELAY_ESTIMATOR_ADJUSTMENT_SPEED*(self.translation_delay_target-self.translation_delay)
+            time.sleep(0.5)
 
     def estimate_translation_delay(self):
         # possible states
@@ -92,20 +100,23 @@ class Session:
         # initial state
         state = AWAITING_VAD
         self.polling_raw_audio = True
-        translation_delay_target = self.translation_delay
+        self.translation_delay_target = self.translation_delay
         last_detection_cycle_end_time = None
         last_vad_time = None
+        sleep_time = 0.25
 
-        iteration = 0
+        threading.Thread(
+            target=self.interpolate_delay,
+            daemon=True,
+        ).start()
+
         while True:
-            iteration += 1
-            if iteration % 10 == 0:  # only log every 10 iterations
-                print(
-                    f"[estimate_translation_delay] "
-                    f"state={STATE_NAMES[state]}, "
-                    f"translation_delay_target={translation_delay_target:.3f}, "
-                    f"self.translation_delay={self.translation_delay:.3f}"
-                )
+            print(
+                f"[estimate_translation_delay] "
+                f"state={STATE_NAMES[state]}, "
+                f"translation_delay_target={self.translation_delay_target:.3f}, "
+                f"self.translation_delay={self.translation_delay:.3f}"
+            )
             # only run the translation estimate if lipsync is enabled
             if (self.settings.enable_video and self.settings.enable_translation and self.settings.enable_lip_sync):
                 if (state == AWAITING_VAD):
@@ -126,35 +137,35 @@ class Session:
                         if(self.last_sent_translation > last_vad_time): # if it happened after we detected speech
                             detected_delay = self.last_sent_translation - last_vad_time
                             if(detected_delay <= DELAY_ESTIMATOR_MAX_VIDEO_DELAY_SECONDS):
-                                translation_delay_target = detected_delay + DELAY_ESTIMATOR_STATIC_DELAY   # set the target delay to the detected delay
-
+                                self.translation_delay_target = detected_delay + DELAY_ESTIMATOR_STATIC_DELAY   # set the target delay to the detected delay
                             # transition state
                             last_vad_time=None
                             state=AWAITING_TRANSLATOR_SILENCE
 
                 if(state == AWAITING_TRANSLATOR_SILENCE):
-                    if(time.perf_counter() - self.last_sent_translation >= DELAY_ESTIMATOR_TRANSLATOR_SILENCE_WAIT_TIME):
+                    remaining_time = time.perf_counter() - self.last_sent_translation
+                    if(remaining_time >= DELAY_ESTIMATOR_TRANSLATOR_SILENCE_WAIT_TIME):
                         last_detection_cycle_end_time = time.perf_counter()
                         state=SLEEPING
+                    else:
+                        sleep_time = DELAY_ESTIMATOR_SLEEP_TIME-remaining_time
 
                 if(state == SLEEPING):
-                    if(time.perf_counter() - last_detection_cycle_end_time >= DELAY_ESTIMATOR_SLEEP_TIME):
+                    remaining_time = time.perf_counter() - last_detection_cycle_end_time
+                    if(remaining_time >= DELAY_ESTIMATOR_SLEEP_TIME):
                         self.polling_raw_audio = True
                         last_detection_cycle_end_time = None
                         state = AWAITING_VAD
-                        
+                    else:
+                        sleep_time = DELAY_ESTIMATOR_SLEEP_TIME-remaining_time
+
             elif self.polling_raw_audio:
                 self.polling_raw_audio = False
                 self.raw_audio_in.clear()
-            
-            # smoothly adjusting the delay
-            delay_diff = translation_delay_target-self.translation_delay
-            if(abs(delay_diff)>0.05):
-                self.translation_delay += DELAY_ESTIMATOR_ADJUSTMENT_SPEED*delay_diff
-            elif(self.translation_delay != translation_delay_target):
-                self.translation_delay = translation_delay_target
 
-            time.sleep(0.1) # run every 0.1s
+            # run loop every 0.25s by default, unless overriden
+            time.sleep(sleep_time) 
+            sleep_time = 0.25 
 
     def generate_empty_audio(self):
         # === Enqueue matching silent audio ===
