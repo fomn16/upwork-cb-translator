@@ -1,7 +1,6 @@
 import os
 import numpy as np
 from tqdm import tqdm
-from models import Wav2Lip
 import lib.audio as audio
 import argparse
 import time
@@ -16,6 +15,7 @@ import torch
 from torch.cuda.amp import autocast
 import torchaudio
 
+from pipelines.lipsync.wav2lip_model.wav2lip import Wav2Lip
 from config.lipsync_config import *
 from config.video_config import *
 
@@ -48,31 +48,58 @@ LOGGER.setLevel("ERROR")
 def load_model(path):
     start = time.time()
     model = Wav2Lip()
-    print("Loading checkpoint from: {}".format(path))
+    print(f"Loading checkpoint from: {path}")
     checkpoint = torch.load(path, map_location=device)
     s = checkpoint["state_dict"]
     new_s = {k.replace("module.", ""): v for k, v in s.items()}
     model.load_state_dict(new_s)
     model = model.to(device)
     model.eval()
+
+    model = torch.compile(model)
+
     print(f"[load_model] Loaded in {time.time() - start:.2f}s")
+    print("starting warmup")
+    warmup_done = False
+    if os.path.exists(CACHE_MEL) and os.path.exists(CACHE_FACE):
+        warm_mel_full = torch.load(CACHE_MEL, map_location=device)
+        warm_face_full = torch.load(CACHE_FACE, map_location=device)
 
-    # ✅ Warmup with fixed input shapes
-    print("[load_model] Warming up with (1,1,80,16) mel and (1,6,96,96) face input...")
+        if warm_mel_full.shape[0] >= 15 and warm_face_full.shape[0] >= 15:
+            print(f"[warmup] Using cached batch {tuple(warm_mel_full.shape)}, {tuple(warm_face_full.shape)}")
 
-    with torch.inference_mode():
-        # Mel input: [B, 1, n_mels, step_size]
-        dummy_mel = torch.randn(1, 1, 80, 16, device=device, dtype=torch.float32)
-        # Face input: [B, 6, 96, 96]
-        dummy_face = torch.randn(1, 6, 96, 96, device=device, dtype=torch.float32)
+            with torch.inference_mode():
+                for i in range(10):  # repeat 10 rounds
+                    for bs in range(1, 16):  # 1..15
+                        warm_mel = warm_mel_full[:bs].to(device)
+                        warm_face = warm_face_full[:bs].to(device)
+                        t = time.perf_counter()
+                        _ = model(warm_mel, warm_face)
+                        print(f"[warmup cached] round {i+1}, bs={bs}/15 complete in {time.perf_counter()-t:.4f}s")
 
-        _ = model(dummy_mel, dummy_face)
+                if device.startswith("cuda"):
+                    torch.cuda.synchronize()
 
-    print("[load_model] Warmup complete.")
+            print("[warmup] Done with cached 1–15 batch warmup")
+            warmup_done = True
+        else:
+            print("[warmup] Cached batch found but not long enough (need at least 15). Skipping.")
+    if not warmup_done:
+        with torch.inference_mode():
+            for i in range (10):
+                for bs in range(1, 16):  # 1..15
+                    dummy_mel = torch.randn(bs, 1, 80, 16, device=device, dtype=torch.float32).to('cuda:0')
+                    dummy_face = torch.randn(bs, 6, 96, 96, device=device, dtype=torch.float32).to('cuda:0')
+                    t = time.perf_counter()
+                    _ = model(dummy_mel, dummy_face)
+                    print(f"warmup {bs}/15 complete in {time.perf_counter()-t}s")
+            torch.cuda.synchronize()
+
+    print("[load_model] Warmup complete (compiled model ready for 1–15 batch sizes).")
 
     return model
 
-model = load_model("wav2lip_Chinese.pth")
+model = load_model("wav2lip_gan.pth")
 
 def clamp_coords(coords, frame_shape):
     """Clamp face coordinates to be within frame boundaries."""
@@ -264,7 +291,7 @@ def match_frames_to_mels(frames: list, mel_chunks: list, tolerance: int = 3) -> 
 
     return frames
 
-def run_inference(gen, mel_chunks: list) -> list:
+def run_inference(gen, mel_chunks: list, save_for_warmup = False) -> list:
     frames_output = []
     frames_written = 0
 
@@ -281,11 +308,19 @@ def run_inference(gen, mel_chunks: list) -> list:
         # mel_batch is list of GPU tensors → stack
         mel_batch = torch.stack(mel_batch, dim=0).unsqueeze(1)  # [B, 1, 80, step_size]
 
-        with torch.inference_mode():
-            with torch.amp.autocast("cuda", enabled=(device == "cuda")):
-                pred = model(mel_batch, img_batch)
+        if (mel_batch.shape[0] == 15 and save_for_warmup
+            and not (os.path.exists(CACHE_MEL) and os.path.exists(CACHE_FACE))):
+            torch.save(mel_batch.cpu(), CACHE_MEL)
+            torch.save(img_batch.cpu(), CACHE_FACE)
+            print(f"[cache] Saved warmup inputs → mel: {tuple(mel_batch.shape)}, face: {tuple(img_batch.shape)}")
 
-        pred = pred.float().cpu().numpy().transpose(0, 2, 3, 1) * 255.0
+        with torch.inference_mode():
+            pred = model(mel_batch, img_batch)
+
+        if isinstance(pred, torch.Tensor):
+            pred = pred.float().cpu().numpy().transpose(0, 2, 3, 1) * 255.0
+        else:
+            pred = pred.astype(np.float32).transpose(0, 2, 3, 1) * 255.0
 
         for p, f, c in zip(pred, frames, coords):
             if c is None:
@@ -406,7 +441,7 @@ def adjust_length_to_match(seq, target_len):
 
     return adjusted
 
-def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect, rotation:int, session_id):
+def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect, rotation:int, session_id, save_for_warmup = False):
     if not frame_buffer or not audio_bytes:
         print("WARNING: Empty frames or audio. Skipping lipsync.")
         return frame_buffer
@@ -440,7 +475,7 @@ def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect, rotation:int
     gen = datagen(frame_buffer, mel_chunks, face_detect)
 
     # 4. Run inference (mixed precision)
-    output_frames =  run_inference(gen, mel_chunks)
+    output_frames =  run_inference(gen, mel_chunks, save_for_warmup)
     print(f"[stream {session_id}] Returning {len(output_frames)} frames")
     if rotation != 0:
         output_frames = [unrotate_frame(f, rotation) for f in output_frames]
@@ -611,14 +646,15 @@ def detect_speech_in_bytes(
     wav = torch.from_numpy(audio_np / 32768.0).to(device)
 
     # --- Run VAD ---
-    speech_timestamps = get_speech_timestamps(
-        wav,
-        _silero_vad_model,
-        sampling_rate=sampling_rate,
-        threshold=threshold,
-        min_speech_duration_ms=min_speech_duration_ms,
-        min_silence_duration_ms=min_silence_duration_ms,
-    )
+    with torch.inference_mode():
+        speech_timestamps = get_speech_timestamps(
+            wav,
+            _silero_vad_model,
+            sampling_rate=sampling_rate,
+            threshold=threshold,
+            min_speech_duration_ms=min_speech_duration_ms,
+            min_silence_duration_ms=min_silence_duration_ms,
+        )
 
     if not speech_timestamps:
         return None

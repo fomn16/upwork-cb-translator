@@ -3,7 +3,7 @@ to run, first do
 pip install -r requirements.txt
 
 then download blaze_face_short_range from https://ai.google.dev/edge/mediapipe/solutions/vision/face_detector/index#models
-and download the wav2lip .pth file. both files can stay in the same folder as main.
+and download the wav2lip_gan.pth file from https://drive.google.com/drive/folders/1tB_uz-TYMePRMZzrDMdShWUZZ0JK3SIZ. both files can stay in the same folder as main.
 
 then run main.py, which will start a process listening on the ports configured in connection_config.py
 
@@ -19,4 +19,4 @@ you might need to run the following to add a few env variables before runing mai
 export DISPLAY=:0
 export EGL_PLATFORM=surfaceless
 
-most important lipsync configurations are present in ../../config/lipsync_config.py
+the most important lipsync configurations are present in ../../config/lipsync_config.py

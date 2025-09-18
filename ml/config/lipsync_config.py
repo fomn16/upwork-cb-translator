@@ -13,4 +13,8 @@ DELAY_ESTIMATOR_ADJUSTMENT_SPEED = 0.1                          # must be betwee
 DELAY_ESTIMATOR_VAD_AUDIO_SAMPLES = INTERNAL_SAMPLERATE*2*0.5   # number of samples sent to the VAD, here is 0.5 seconds at 16 bits
 DELAY_ESTIMATOR_TRANSLATOR_SILENCE_WAIT_TIME = 2                # the end of the translation is detected when no translation is received for 2 seconds
 DELAY_ESTIMATOR_MAX_VIDEO_DELAY_SECONDS = 10                    # detected delays greater than this will be ignored
-DELAY_ESTIMATOR_SILENT_AUDIO_WINDOW = 2                         # Will apply lipsync with silent audio 1s before the estimated time of translation arrival
+DELAY_RUNNING_AVERAGE_SIZE = 20                                 # size of buffer kept for running average of delay across all sessions
+
+#location in which to save real test data for warmup
+CACHE_MEL = "warmup_mel.pt"
+CACHE_FACE = "warmup_face.pt"
