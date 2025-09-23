@@ -13,8 +13,9 @@ class AudioQueue:
         self.total_bytes = 0  # track total size without recomputing
 
     def clear(self):
-        self.total_bytes = 0
-        self.queue.clear()
+        with self.lock:
+            self.total_bytes = 0
+            self.queue.clear()
 
     def enqueue(self, new_data: bytes):
         with self.not_empty:
