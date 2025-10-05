@@ -31,13 +31,17 @@ AUDIO_OUTPUT_BUFFER_SIZE = OUTPUT_QUEUE_SIZE_SECONDS*INTERNAL_SAMPLERATE*2
 
 from collections import deque
 from statistics import mean
+
+global_delay_lock = threading.Lock()
 global_delay_measures = deque([MAX_LIPSYNC_MODEL_CHUNK_SECONDS], maxlen=DELAY_RUNNING_AVERAGE_SIZE)
 
 def add_to_delay_stats(delay):
-    global_delay_measures.append(delay)
+    with global_delay_lock:
+        global_delay_measures.append(delay)
 
 def get_current_delay():
-    return mean(global_delay_measures)
+    with global_delay_lock:
+        return mean(global_delay_measures)
 
 class Session:
     def __init__(self, session_id:str, settings:SessionSettings):
@@ -90,13 +94,16 @@ class Session:
     def interpolate_delay(self):
         i = 0
         while(True):
-            target = get_current_delay()
-            i+=1
-            if(i==10):
-                print(f'current video delay = {self.translation_delay}, target = {target}')
-                i = 0
-            self.translation_delay += DELAY_ESTIMATOR_ADJUSTMENT_SPEED*(target-self.translation_delay)
-            time.sleep(0.5)
+            try:
+                target = get_current_delay()
+                i+=1
+                if(i==10):
+                    print(f'current video delay = {self.translation_delay}, target = {target}')
+                    i = 0
+                self.translation_delay += DELAY_ESTIMATOR_ADJUSTMENT_SPEED*(target-self.translation_delay)
+                time.sleep(0.5)
+            except Exception as e:
+                print("WARNING: something went wrong in interpolate_delay:", e)
 
     def estimate_translation_delay(self):
         # possible states
@@ -123,58 +130,67 @@ class Session:
         ).start()
         i=0
         while True:
-            i+=1
-            if(i==10):
-                print(
-                    f"[estimate_translation_delay] "
-                    f"state={STATE_NAMES[state]}, "
-                )
-                i=0
-            # only run the translation estimate if lipsync is enabled
-            if (self.settings.enable_video and self.settings.enable_translation and self.settings.enable_lip_sync):
-                if (state == AWAITING_VAD):
-                    self.polling_raw_audio = True
-                    available_audio = len(self.raw_audio_in)
-                    if (available_audio >= DELAY_ESTIMATOR_VAD_AUDIO_SAMPLES): #send raw audio to the VAD in chunks
-                        raw_audio = self.raw_audio_in.dequeue(available_audio)
-                        detection = detect_speech_in_bytes(raw_audio)
-                        if(detection != None):  # if voice is detected, transitions state
-                            self.polling_raw_audio = False
-                            self.raw_audio_in.clear()
-                            last_vad_time = time.perf_counter() - detection
-                            state = AWAITING_TRANSLATION
-                            self.apply_silent_audio_lipsync = True
-                            awaiting_translation_start = time.perf_counter()
-
-                if(state == AWAITING_TRANSLATION):
-                    if(time.perf_counter() - awaiting_translation_start > DELAY_ESTIMATOR_MAX_VIDEO_DELAY_SECONDS):
+            try:
+                i+=1
+                if(i==10):
+                    print(
+                        f"[estimate_translation_delay] "
+                        f"state={STATE_NAMES[state]}, "
+                    )
+                    i=0
+                # only run the translation estimate if lipsync is enabled
+                if (self.settings.enable_video and self.settings.enable_translation and self.settings.enable_lip_sync):
+                    if (state == AWAITING_VAD):
                         self.polling_raw_audio = True
-                        self.apply_silent_audio_lipsync = False
-                        state=AWAITING_VAD
-                    elif(self.last_sent_translation != None):                #if any translation was received
-                        if(self.last_sent_translation > last_vad_time):         # if it happened after we detected speech
-                            detected_delay = self.last_sent_translation - last_vad_time
-                            if(detected_delay <= DELAY_ESTIMATOR_MAX_VIDEO_DELAY_SECONDS):
-                                add_to_delay_stats(detected_delay)
-                            # transition state
-                            last_vad_time=None
-                            state=AWAITING_TRANSLATOR_SILENCE
+                        available_audio = len(self.raw_audio_in)
+                        if (available_audio >= DELAY_ESTIMATOR_VAD_AUDIO_SAMPLES): #send raw audio to the VAD in chunks
+                            raw_audio = self.raw_audio_in.dequeue(available_audio)
+                            detection = detect_speech_in_bytes(raw_audio)
+                            if(detection != None):  # if voice is detected, transitions state
+                                self.polling_raw_audio = False
+                                self.raw_audio_in.clear()
+                                last_vad_time = time.perf_counter() - detection
+                                state = AWAITING_TRANSLATION
+                                self.apply_silent_audio_lipsync = True
+                                awaiting_translation_start = time.perf_counter()
 
-                if(state == AWAITING_TRANSLATOR_SILENCE):
-                    remaining_time = time.perf_counter() - self.last_sent_translation
-                    if(remaining_time >= DELAY_ESTIMATOR_TRANSLATOR_SILENCE_WAIT_TIME):
-                        self.polling_raw_audio = True
-                        self.apply_silent_audio_lipsync = False
-                        state=AWAITING_VAD
-                    else:
-                        sleep_time = DELAY_ESTIMATOR_TRANSLATOR_SILENCE_WAIT_TIME-remaining_time
-            elif self.polling_raw_audio:
-                self.polling_raw_audio = False
-                self.raw_audio_in.clear()
+                    if(state == AWAITING_TRANSLATION):
+                        if(time.perf_counter() - awaiting_translation_start > DELAY_ESTIMATOR_MAX_VIDEO_DELAY_SECONDS):
+                            self.polling_raw_audio = True
+                            self.apply_silent_audio_lipsync = False
+                            state=AWAITING_VAD
+                        elif(self.last_sent_translation != None):                #if any translation was received
+                            if(self.last_sent_translation > last_vad_time):         # if it happened after we detected speech
+                                detected_delay = self.last_sent_translation - last_vad_time
+                                if(detected_delay <= DELAY_ESTIMATOR_MAX_VIDEO_DELAY_SECONDS):
+                                    add_to_delay_stats(detected_delay)
+                                # transition state
+                                last_vad_time=None
+                                state=AWAITING_TRANSLATOR_SILENCE
 
-            # run loop every 0.25s by default, unless overriden
-            time.sleep(sleep_time) 
-            sleep_time = 0.25 
+                    if(state == AWAITING_TRANSLATOR_SILENCE):
+                        remaining_time = time.perf_counter() - self.last_sent_translation
+                        if(remaining_time >= DELAY_ESTIMATOR_TRANSLATOR_SILENCE_WAIT_TIME):
+                            self.polling_raw_audio = True
+                            self.apply_silent_audio_lipsync = False
+                            state=AWAITING_VAD
+                        else:
+                            sleep_time = DELAY_ESTIMATOR_TRANSLATOR_SILENCE_WAIT_TIME-remaining_time
+                elif self.polling_raw_audio:
+                    self.polling_raw_audio = False
+                    print('before clear')
+                    self.raw_audio_in.clear()
+                    print('after clear')
+
+                # run loop every 0.25s by default, unless overriden
+                time.sleep(sleep_time) 
+                sleep_time = 0.25
+            except Exception as e:
+                print("WARNING: something went wrong in estimate_translation_delay:", e)
+                state = AWAITING_VAD
+                self.polling_raw_audio = True
+                last_vad_time = None
+                sleep_time = 0.25
 
     def generate_empty_audio(self):
         # === Enqueue matching silent audio ===
@@ -286,8 +302,8 @@ class Session:
         return audio_for_lipsync
     
     def process(self):
-        try:
-            while True: 
+        while True:
+            try:
                 timeout = not self.received_data.wait(timeout=30)  # waits for data to be received, also has a timeout
                 if (self.raw_audio_in.closed or 
                     self.translated_audio_in.closed or 
@@ -395,32 +411,32 @@ class Session:
                                 self.video_out.enqueue(video_frame)
                                 self.audio_out.enqueue(self.empty_audio_chunk)
                                 available_video_time = len(self.video_in) / FRAME_RATE
-
-        except Exception as e:
-            print(f"Error in processing thread: {e}")
-            raise
-        finally:
-            self.close()
+            except Exception as e:
+                print("WARNING: something went wrong in process() iteration:", e)
+        self.close()
 
     def send_audio_data(self):
         global translated_audio_socket
         start_time = time.perf_counter()
         frame_index = 0
         while not self.closed:
-            target_time = start_time + frame_index * AUDIO_CHUNK_DURATION
-            frame_index += 1
-            audio = self.audio_out.dequeue(INTERNAL_N_AUDIO_CHUNK_BYTES, block=False) # blocks for half the send rate in the worst case
-            if audio:
-                translated_audio_socket.send(self.session_id, audio)
+            try:
+                target_time = start_time + frame_index * AUDIO_CHUNK_DURATION
+                frame_index += 1
+                audio = self.audio_out.dequeue(INTERNAL_N_AUDIO_CHUNK_BYTES, block=False) # blocks for half the send rate in the worst case
+                if audio:
+                    translated_audio_socket.send(self.session_id, audio)
 
-            sleep_time = target_time - time.perf_counter()
+                sleep_time = target_time - time.perf_counter()
 
-            # Slight speed-up if buffer is too full
-            if len(self.audio_out) > AUDIO_OUTPUT_BUFFER_SIZE:
-                sleep_time *= 0.5
+                # Slight speed-up if buffer is too full
+                if len(self.audio_out) > AUDIO_OUTPUT_BUFFER_SIZE:
+                    sleep_time *= 0.5
 
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+            except Exception as e:
+                print("WARNING: something went wrong in send_audio_data:", e)
 
     def send_video_data(self):
         global video_socket
@@ -435,21 +451,24 @@ class Session:
         frame_index = 0
 
         while not self.closed:
-            target_time = start_time + frame_index * time_per_video_send
-            frame_index += 1
+            try:
+                target_time = start_time + frame_index * time_per_video_send
+                frame_index += 1
 
-            frame = self.video_out.dequeue()
-            if frame is not None and getattr(frame, "size", 0) > 0:
-                video_socket.send(self.session_id, frame.tobytes(order="C"))
+                frame = self.video_out.dequeue()
+                if frame is not None and getattr(frame, "size", 0) > 0:
+                    video_socket.send(self.session_id, frame.tobytes(order="C"))
 
-            sleep_time = target_time - time.perf_counter()
+                sleep_time = target_time - time.perf_counter()
 
-            # Slight speed-up if buffer is too full
-            if len(self.video_out) > VIDEO_OUTPUT_BUFFER_SIZE:
-                sleep_time *= 0.5
+                # Slight speed-up if buffer is too full
+                if len(self.video_out) > VIDEO_OUTPUT_BUFFER_SIZE:
+                    sleep_time *= 0.5
 
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+            except Exception as e:
+                print("WARNING: something went wrong in send_video_data:", e)
 
 class SessionManager:
     def __init__(self):
