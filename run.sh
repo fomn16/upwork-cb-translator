@@ -34,16 +34,6 @@ PIDS+=($!)
 
 sleep 0.1
 
-konsole --hold -e bash -c "source $CONDA_PATH && conda activate ml2 && cd ml && python main.py" &
-PIDS+=($!)
-
-sleep 0.1
-
-konsole --hold -e bash -c "source $CONDA_PATH && conda activate lipsync && cd ml/pipelines/lipsync && export DISPLAY=:0 && export EGL_PLATFORM=surfaceless && python main.py" &
-PIDS+=($!)
-
-sleep 0.1
-
 konsole --hold -e bash -c "source $CONDA_PATH && conda activate voice_clone && cd ml/pipelines/voice_clone && python main.py" &
 PIDS+=($!)
 
@@ -57,10 +47,20 @@ sleep 0.1
 konsole --hold -e bash -c "source $CONDA_PATH && conda activate translation && cd ml/pipelines/translation && python main.py" &
 PIDS+=($!)
 
+sleep 0.1
+
+konsole --hold -e bash -c "source $CONDA_PATH && conda activate lipsync && cd ml/pipelines/lipsync && export DISPLAY=:0 && export EGL_PLATFORM=surfaceless && python main.py" &
+PIDS+=($!)
+
+sleep 0.1
+
+konsole --hold -e bash -c "source $CONDA_PATH && conda activate ml2 && cd ml && python main.py" &
+PIDS+=($!)
+
 sleep 1
 
 # Open Chrome with persistent profile
-google-chrome-stable --user-data-dir="$PROFILE_DIR" "http://localhost:5173/" --new-window &
-google-chrome-stable --user-data-dir="$PROFILE_DIR" --incognito "http://localhost:5173/" &
+#google-chrome-stable --user-data-dir="$PROFILE_DIR" "http://localhost:5173/" --new-window &
+#google-chrome-stable --user-data-dir="$PROFILE_DIR" --incognito "http://localhost:5173/" &
 
 wait

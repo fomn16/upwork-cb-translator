@@ -29,6 +29,7 @@ from lib.queue.audio_queue import AudioQueue
 from config.connection_config import *
 from config.audio_config import *
 from config.translation_config import *
+from bench import *
 
 whisper_sessions = {}
 
@@ -391,12 +392,17 @@ def process_translation_chunk_whisper(
         
         # Insert audio chunk into Whisper online processor
         if session_whisper and session_whisper["online"]:
+            insert_audio_chunk_bench = time.perf_counter()
             session_whisper["online"].insert_audio_chunk(audio_float)
+            add_time_and_print(time.perf_counter()-insert_audio_chunk_bench, 'insert_audio_chunk')
             #print("seg reached here")
 
             
             # Process the audio chunk
+            process_iter_bench = time.perf_counter()
             result = session_whisper["online"].process_iter()
+            add_time_and_print(time.perf_counter()-process_iter_bench, 'process_iter')
+
             #print(result)
             # Extract transcribed text if available
             transcribed_text = wms.output_transcript(result)
@@ -404,14 +410,16 @@ def process_translation_chunk_whisper(
             if transcribed_text and is_valid_english(transcribed_text):
                 print(f"🎤 Transcribed: {transcribed_text}", flush=True)
 
-                translation_time = time.time()
+                translation_time = time.perf_counter()
                 audio_tensor, sr, text_output = request_translation_tensor(
                     host="0.0.0.0",
                     port=SEAMLESS_T2S_SERVER_PORT,
                     text=transcribed_text,
                     tgt_lang=target_lang
                 )
-                print(f"seamless time = {time.time() - translation_time}")
+                translation_time = time.perf_counter() - translation_time
+                add_time_and_print(translation_time, 'request_translation_tensor')
+                print(f"seamless time = {translation_time}")
 
                 if audio_tensor is not None:
                     print(f"session id :{session_id}, text_output: {text_output}")
@@ -428,7 +436,10 @@ def process_translation_chunk_whisper(
                             speaker_id = speaker_id
 
                         print(f"Cloning voice for {speaker_id}")
+                        request_voice_clone_bench = time.perf_counter()
                         clone_tensor = request_voice_clone(audio_tensor, speaker_id=speaker_id, sample_rate=sr)
+                        add_time_and_print(time.perf_counter() - request_voice_clone_bench, 'request_voice_clone')
+
                         cloned_audio_bytes = tensor_to_bytes(clone_tensor)
                         translated_audio_bytes = resample_audio(cloned_audio_bytes, 22050, INTERNAL_SAMPLERATE)
                     else:
@@ -455,9 +466,9 @@ def initialize_whisper_for_session(session_id, lang:str):
     class WhisperArgs:
         def __init__(self):
             self.language = lang # this is the source language. target is either the same (if task == transcript) or english (task==translate)
-            self.min_chunk_size = 0.3
+            self.min_chunk_size = 0.7
             self.vac = True
-            self.model = "large-v3"
+            self.model = "medium"
             self.task = "translate"
             self.model_cache_dir = None
             self.model_dir = None
@@ -523,11 +534,13 @@ class Session:
                     continue
 
                 if(len(self.audio_in)>=CHUNK_SIZE_BYTES):
+                    bench_time = time.perf_counter()
                     chunk_count += 1
                     seg = self.audio_in.dequeue(CHUNK_SIZE_BYTES)
                     #####################################################################################
                     if self.settings.enable_voice_clone:
                         # 🔁 Inside your while loop:
+                        vc_time = time.perf_counter()
                         chunk_count, embedding_counter, speaker_id = process_voice_embedding_chunk(
                             seg=seg,
                             session_id=self.session_id,
@@ -543,9 +556,12 @@ class Session:
                             nr=nr,
                             is_silent=is_silent
                         )
+
+                        add_time_and_print(time.perf_counter()-vc_time, 'process_voice_embedding_chunk')
                     ##############################################################
 
                     if self.settings.enable_translation:
+                        t_time = time.perf_counter()
                         process_translation_chunk_whisper(
                             seg,                            # audio chunk bytes
                             self.output,#output_queue,      # function that outputs audio bytes # (previously, your queue to receive transcriptions)
@@ -556,8 +572,11 @@ class Session:
                             session_id=self.session_id,
                             speaker_id=self.settings.user_id
                         )
+
+                        add_time_and_print(time.perf_counter()-t_time, 'process_translation_chunk_whisper')
                     else: # if not translating, pass audio through
                         self.output(seg)
+                    add_time_and_print(time.perf_counter()-bench_time, 'translation_process')
 
         except Exception as e:
             print(f"[translate]: Error in processing thread: {e}")

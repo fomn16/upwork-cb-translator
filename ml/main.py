@@ -19,6 +19,62 @@ from socket_communication import *
 
 from lib.communication.mediassoup_request import *
 
+
+import time
+import asyncio
+
+
+# functions that read from a prerecorded video file for testing
+TEST_VIDEO_FILE_PATH = "testvideo.mp4"
+def run_ffmpeg_input_from_file(
+    file_path: str = TEST_VIDEO_FILE_PATH,
+    target_rate: int = EXTERNAL_SAMPLERATE,  # e.g., 48000
+    out_channels: int = 2,
+) -> Popen:
+    cmd = [
+        "ffmpeg",
+        "-nostdin",
+        "-loglevel", "info",
+        "-re",                         # pace output in real time
+        "-stream_loop", "-1",          # optional: loop the file
+        "-i", file_path,
+        "-vn",
+        "-c:a", "pcm_s16le",
+        "-ar", str(target_rate),
+        "-ac", str(out_channels),
+        "-f", "s16le",
+        "pipe:1",
+    ]
+    return subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+    )
+
+def run_ffmpeg_video_pipe_from_file(
+    file_path: str = TEST_VIDEO_FILE_PATH,
+    frame_width: int = FRAME_WIDTH,
+    frame_height: int = FRAME_HEIGHT,
+    frame_rate: int = FRAME_RATE,
+) -> Popen:
+    cmd = [
+        "ffmpeg",
+        "-nostdin",
+        "-loglevel", "info",
+        "-re",                         # pace output in real time
+        "-stream_loop", "-1",          # optional: loop the file
+        "-i", file_path,
+        "-an",
+        "-r", str(frame_rate),         # cap FPS
+        "-f", "rawvideo",
+        "-vf", f"scale={frame_width}:{frame_height},format=bgr24",
+        "pipe:1",
+    ]
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=frame_width * frame_height * 3,
+    )
+
 # Initializes the file used to read input from the network
 def write_sdp_file(payload_type, codec_name, clock_rate, channels, rtp_port):
     sdp_content = f"""v=0
@@ -160,9 +216,9 @@ def to_internal_format(
 # Function that reads from the input pipe, processes audio, and enqueues to output
 def pump_audio(
     ff_in: Popen,
-    ff_out: Popen,
+    #ff_out: Popen,
     segment_size: int,
-    sdp_path: str,
+    #sdp_path: str,
     session_id: str,
 ):
     try:
@@ -176,13 +232,13 @@ def pump_audio(
             lipsync_raw_audio_socket.send(session_id, seg_converted)
     finally:
         ff_in.stdout.close()
-        ff_out.stdin.close()
+        #ff_out.stdin.close()
         ff_in.wait()
-        ff_out.wait()
+        '''ff_out.wait()
         try:
             os.remove(sdp_path)
         except OSError:
-            pass
+            pass'''
 
 # ----------------- FastAPI Server ----------------- #
 app = FastAPI()
@@ -195,7 +251,7 @@ async def initiate_translation(data: TranslationRequest):
     # sends initial settings to all enviromnents
     send_settings(data.sessionId, SessionSettings(audio_request=data))
 
-    sample_rate = data.clockRate
+    '''sample_rate = data.clockRate
 
     # Sets up the read file from the rtp port provided by the client
     sdp_path = write_sdp_file(
@@ -204,19 +260,19 @@ async def initiate_translation(data: TranslationRequest):
         clock_rate=sample_rate,
         channels=data.channels,
         rtp_port=data.rtpPort,
-    )
+    )'''
 
-    ff_in = run_ffmpeg_input(sdp_path)
-    ff_out = run_ffmpeg_output(MEDIASERVER_IP, data.outputPort, data.payloadType, data.ssrc)
-    audio_out_pipes[data.sessionId] = ff_out
+    ff_in = run_ffmpeg_input_from_file()
+    #ff_out = run_ffmpeg_output(MEDIASERVER_IP, data.outputPort, data.payloadType, data.ssrc)
+    #audio_out_pipes[data.sessionId] = ff_out
 
     # Create threads that log errors encountered by FFmpeg
     threading.Thread(
         target=print_ffmpeg_logs, args=(ff_in, "FFmpeg-IN"), daemon=True
     ).start()
-    threading.Thread(
+    '''threading.Thread(
         target=print_ffmpeg_logs, args=(ff_out, "FFmpeg-OUT"), daemon=True
-    ).start()
+    ).start()'''
     
     # manually enter the language code here
     # Create thread to process audio
@@ -224,9 +280,9 @@ async def initiate_translation(data: TranslationRequest):
         target=pump_audio,
         args=(
             ff_in,
-            ff_out,
+            #ff_out,
             EXTERNAL_N_AUDIO_CHUNK_BYTES,
-            sdp_path,
+            #sdp_path,
             data.sessionId,
         ),
         daemon=True,
@@ -361,7 +417,7 @@ def run_ffmpeg_video_output(
 
 def foward_frames_for_processing(
     in_proc: Popen,
-    out_proc: Popen,
+    #out_proc: Popen,
     frame_width: int,
     frame_height: int,
     session_id: str
@@ -385,10 +441,10 @@ def foward_frames_for_processing(
             in_proc.terminate()
             in_proc.wait(timeout=5)
 
-            out_proc.stdout.close()
+            '''out_proc.stdout.close()
             out_proc.stderr.close()
             out_proc.terminate()
-            out_proc.wait(timeout=5)
+            out_proc.wait(timeout=5)'''
         except:
             pass
         print("✅ Frame fowarder stopped")
@@ -398,39 +454,39 @@ async def initiate_video_capture(data: VideoCaptureRequest):
     global video_out_pipes
     print("📥 Received video capture initiation:", data.dict())
 
-    sdp_path = write_video_sdp_file(
+    '''sdp_path = write_video_sdp_file(
         payload_type=data.payloadType,
         codec_name=data.codec,
         clock_rate=data.clockRate,
         rtp_port=data.rtpPort,
-    )
+    )'''
 
-    ffmpeg_in = run_ffmpeg_video_pipe(sdp_path)
+    ffmpeg_in = run_ffmpeg_video_pipe_from_file()
 
     print(f"🔄️ FFmpeg process started with PID {ffmpeg_in.pid}")
 
-    ffmpeg_out = run_ffmpeg_video_output(
+    '''ffmpeg_out = run_ffmpeg_video_output(
         MEDIASERVER_IP,  # Mediasoup plain transport IP
         data.outputPort,  # Mediasoup plain transport video port
         data.payloadType,
         data.ssrc
     )
-    video_out_pipes[data.sessionId] = ffmpeg_out
+    video_out_pipes[data.sessionId] = ffmpeg_out'''
 
 
     threading.Thread(
         target=print_ffmpeg_logs, args=(ffmpeg_in, "FFmpeg-video-in"), daemon=True
     ).start()
 
-    threading.Thread(
+    '''threading.Thread(
         target=print_ffmpeg_logs, args=(ffmpeg_out, "FFmpeg-video-out"), daemon=True
-    ).start()
+    ).start()'''
 
     threading.Thread(
         target=foward_frames_for_processing,
         args=(
             ffmpeg_in,
-            ffmpeg_out,
+            #ffmpeg_out,
             FRAME_WIDTH,
             FRAME_HEIGHT,
             data.sessionId
@@ -441,6 +497,21 @@ async def initiate_video_capture(data: VideoCaptureRequest):
     return {"status": "Frame-based video capture started."}
 
 
+async def main():
+    await asyncio.gather(
+        initiate_translation(TranslationRequest(
+            sessionId='test_session',
+            userId='felipe',
+            sourceLang='en',
+            targetLang='eng',
+        )),
+        initiate_video_capture(VideoCaptureRequest(sessionId='test_session')),
+    )
+
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=MAIN_ENDPOINT_PORT, reload=False)
+    time.sleep(20)
+    asyncio.run(main())
+    while True:
+        time.sleep(1)
+    #uvicorn.run("main:app", host="127.0.0.1", port=MAIN_ENDPOINT_PORT, reload=False)
 # %%

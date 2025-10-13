@@ -1,24 +1,24 @@
 from pydantic import BaseModel
 
 class VideoCaptureRequest(BaseModel):
-    payloadType: int
-    codec: str
-    clockRate: int
-    rtpPort: int
-    outputPort: int
-    sessionId: str
-    ssrc: int
+    payloadType: int = None
+    codec: str = None
+    clockRate: int = None
+    rtpPort: int = None
+    outputPort: int = None
+    sessionId: str = None
+    ssrc: int = None
 
 class TranslationRequest(BaseModel):
-    payloadType: int
-    codec: str
-    clockRate: int
-    channels: int
-    rtpPort: int
-    outputPort: int
-    ssrc: int
-    sourceLang: str
-    targetLang: str
-    sessionId: str
-    userId: str
-    cameraRotation:int
+    payloadType: int = None
+    codec: str = None
+    clockRate: int = None
+    channels: int = None
+    rtpPort: int = None
+    outputPort: int = None
+    ssrc: int = None
+    sourceLang: str = None
+    targetLang: str = None
+    sessionId: str = None
+    userId: str = None
+    cameraRotation:int = None

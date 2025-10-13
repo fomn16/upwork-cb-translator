@@ -18,6 +18,7 @@ import torchaudio
 from pipelines.lipsync.wav2lip_model.wav2lip import Wav2Lip
 from config.lipsync_config import *
 from config.video_config import *
+from bench import *
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -442,6 +443,7 @@ def adjust_length_to_match(seq, target_len):
     return adjusted
 
 def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect, rotation:int, session_id, save_for_warmup = False):
+    bench_time = time.perf_counter()
     if not frame_buffer or not audio_bytes:
         print("WARNING: Empty frames or audio. Skipping lipsync.")
         return frame_buffer
@@ -492,7 +494,7 @@ def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect, rotation:int
             f"({len(output_frames)} → {len(frame_buffer)})"
         )
         output_frames = adjust_length_to_match(output_frames, len(frame_buffer))
-
+    add_time_and_print(time.perf_counter()-bench_time, 'run_lipsync_from_frames')
     return output_frames
 
 print("Loading MediaPipe Face Detector (GPU)...")
