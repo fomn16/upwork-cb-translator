@@ -506,6 +506,13 @@ async def main():
             targetLang='eng',
         )),
         initiate_video_capture(VideoCaptureRequest(sessionId='test_session')),
+        initiate_translation(TranslationRequest(
+            sessionId='test_session2',
+            userId='felipe',
+            sourceLang='en',
+            targetLang='eng',
+        )),
+        initiate_video_capture(VideoCaptureRequest(sessionId='test_session2')),
     )
 
 if __name__ == "__main__":

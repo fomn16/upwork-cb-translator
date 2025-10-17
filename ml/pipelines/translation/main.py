@@ -518,6 +518,7 @@ class Session:
         self.settings = settings
 
     def output(self, audio_bytes):
+        log_to_server("audio",f"translation sent", self.session_id, len(audio_bytes))
         self.audio_socket.send(self.session_id, audio_bytes)
 
     def process(self):

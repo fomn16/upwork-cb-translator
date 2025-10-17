@@ -85,11 +85,11 @@ class Session:
         self.polling_raw_audio = False
         self.last_sent_translation = None
 
-        threading.Thread(
+        '''threading.Thread(
             target=self.estimate_translation_delay,
             daemon=True,
         ).start()
-
+'''
     # smoothly adjusting the video delay based on current and target
     def interpolate_delay(self):
         i = 0
@@ -206,6 +206,7 @@ class Session:
             self.raw_audio_in.enqueue(audio_bytes)
 
     def add_translated_audio(self, audio_bytes):
+        log_to_server("audio", f"translated audio received", self.session_id, len(audio_bytes))
         #if the lipsync doesnt need to be applied, fowards audio directly to the output
         if self.settings.enable_video and self.settings.enable_translation and self.settings.enable_lip_sync:
             self.translated_audio_in.enqueue(audio_bytes)
@@ -356,6 +357,8 @@ class Session:
                                     silence = (np.zeros(pad_samples, dtype=np.int16)).tobytes()
                                     audio_for_lipsync += silence
 
+                            log_to_server("video", f"lipsync sent to model", self.session_id, len(video_for_lipsync))
+
                             synced_video = run_lipsync_from_frames(
                                 video_for_lipsync,
                                 audio_for_lipsync,
@@ -364,6 +367,8 @@ class Session:
                                 self.session_id,
                                 save_for_warmup=True
                             )
+
+                            log_to_server("video", f"lipsync received from model", self.session_id, len(synced_video))
 
                             for synced_video_frame in synced_video:
                                 self.video_out.enqueue(synced_video_frame)
