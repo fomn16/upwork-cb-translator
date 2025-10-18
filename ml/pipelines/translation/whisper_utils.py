@@ -776,11 +776,11 @@ def asr_factory(args, logfile=sys.stderr):
 
         # Only for FasterWhisperASR and WhisperTimestampedASR
         size = args.model
-        t = time.time()
-        logger.info(f"Loading Whisper {size} model for {args.language}...")
+        #t = time.time()
+        #logger.info(f"Loading Whisper {size} model for {args.language}...")
         asr = asr_cls(modelsize=size, lan=args.language, cache_dir=args.model_cache_dir, model_dir=args.model_dir)
-        e = time.time()
-        logger.info(f"done. It took {round(e-t,2)} seconds.")
+        #e = time.time()
+        #logger.info(f"done. It took {round(e-t,2)} seconds.")
 
     # Apply common configurations
     if getattr(args, 'vad', False):  # Checks if VAD argument is present and True

@@ -5,6 +5,7 @@ from subprocess import Popen
 import threading
 import numpy as np
 from fastapi import FastAPI
+from bench import log_to_server
 import uvicorn
 import uuid
 import torch
@@ -227,9 +228,11 @@ def pump_audio(
             if not seg:
                 print("empty chunk, stopping")
                 break
+            log_to_server('audio', 'received', session_id, len(seg)/12)
             seg_converted = to_internal_format(seg, EXTERNAL_SAMPLERATE)
             translate_socket.send(session_id, seg_converted)
             lipsync_raw_audio_socket.send(session_id, seg_converted)
+            log_to_server('audio', 'sent', session_id, len(seg)/12)
     finally:
         ff_in.stdout.close()
         #ff_out.stdin.close()
@@ -430,7 +433,10 @@ def foward_frames_for_processing(
             if not raw_frame:
                 print("📤 FFmpeg pipe ended")
                 break
+
+            log_to_server('video', 'received', session_id, 1)
             lipsync_video_socket.send(session_id, raw_frame)
+            log_to_server('video', 'sent', session_id, 1)
     except Exception as e:
         print(f"⚠️ Error in foward_frames_for_processing: {e}")
     finally:

@@ -72,14 +72,14 @@ def voice_clone_server():
                 audio_data = data["audio"]
                 sample_rate = data.get("sample_rate", 16000)
 
-                start_time = time.time()
+                #start_time = time.time()
                 preprocessed = preprocess_live_audio_for_clone(audio_data, sample_rate, vc_model.config.audio.input_sample_rate)
                 converted_wav = vc_model.voice_conversion(
                     preprocessed.to(vc_model.device),
                     speaker_id=speaker_id,
                     voice_dir=os.path.abspath("./voice_embeddings")
                 )
-                print(f"✅ Clone complete in {time.time() - start_time:.2f}s")
+                #print(f"✅ Clone complete in {time.time() - start_time:.2f}s")
                 #print(type(converted_wav))
                 save_to_wav(converted_wav)             
                 conn.send(converted_wav)
@@ -89,14 +89,14 @@ def voice_clone_server():
                 if not os.path.exists(audio_path):
                     raise FileNotFoundError(f"❌ File not found: {audio_path}")
 
-                start_time = time.time()
+                #start_time = time.time()
                 vc_model.voice_conversion(
                     audio_path,
                     audio_path,  # dummy target
                     speaker_id=speaker_id,
                     voice_dir=os.path.abspath("./voice_embeddings")
                 )
-                print(f"✅ Embedding saved in {time.time() - start_time:.2f}s")
+                #print(f"✅ Embedding saved in {time.time() - start_time:.2f}s")
                 conn.send(True)
 
             else:

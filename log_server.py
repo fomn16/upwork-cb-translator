@@ -153,13 +153,15 @@ signal.signal(signal.SIGTERM, save_interactive_html)
 # Main
 # --------------------------------------------------
 if __name__ == "__main__":
-    server_thread = Thread(
+    '''server_thread = Thread(
         target=lambda: app.run(
             host="127.0.0.1", port=4567, debug=False, use_reloader=False
         ),
         daemon=True,
     )
-    server_thread.start()
-
-    print("Server running. Plotting live updates...")
-    plot_loop()
+    server_thread.start()'''
+    #print("Server running. Plotting live updates...")
+    #plot_loop()
+    app.run(
+        host="127.0.0.1", port=4567, debug=False, use_reloader=False
+    )

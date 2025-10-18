@@ -173,6 +173,7 @@ video_out_pipes: Dict[str, Popen[bytes]]= {}
 session_settings:Dict[str, SessionSettings] = {}
 
 def receive_synced_audio(session_id:str, audio_bytes:bytes):
+    pass
     '''global audio_out_pipes
     if session_id not in audio_out_pipes:
         print(f"⚠️ [received_synced_audio]: session {session_id} not found.")
@@ -181,12 +182,13 @@ def receive_synced_audio(session_id:str, audio_bytes:bytes):
     try:
         out_pipe.stdin.write(audio_bytes)
         out_pipe.stdin.flush()'''
-    collect_audio_chunk(audio_bytes, session_id)
+    #collect_audio_chunk(audio_bytes, session_id)
     '''except BrokenPipeError:
         print("⚠️ FFmpeg-audio-out pipe closed")
         return'''
 
 def receive_synced_video(session_id:str, video_bytes:bytes):
+    pass
     '''global video_out_pipes
     if session_id not in video_out_pipes:
         print(f"⚠️ [receive_synced_video]: session {session_id} not found.")
@@ -194,7 +196,7 @@ def receive_synced_video(session_id:str, video_bytes:bytes):
     out_pipe = video_out_pipes[session_id]
     try:
         out_pipe.stdin.write(video_bytes)'''
-    collect_video_frame(video_bytes, session_id)
+    #collect_video_frame(video_bytes, session_id)
     '''except BrokenPipeError:
         print("⚠️ FFmpeg-video-out pipe closed")
         return'''
