@@ -7,7 +7,7 @@ FACE_DETECT_FRAME_SKIP = 5                  # runs face detection once every 15 
 
 MAX_LIPSYNC_MODEL_CHUNK_SECONDS = 1         # maximum ammount of time passed in each call to the lipsync model
 MIN_LIPSYNC_MODEL_CHUNK_SECONDS = 0.2       # minimum ammount of time passed in each call to the lipsync model, only used at the end of a lipsync block call
-OUTPUT_QUEUE_SIZE_SECONDS = 1               # size of the output queue, should be greater than the time it takes to process one lipsync chunk
+OUTPUT_QUEUE_SIZE_SECONDS = 0.5             # size of the output queue, should be greater than the time it takes to process one lipsync chunk
 
 DELAY_ESTIMATOR_ADJUSTMENT_SPEED = 0.1                          # must be between 0 and 1, with a higher value the video input queue size changes faster.
 DELAY_ESTIMATOR_VAD_AUDIO_SAMPLES = INTERNAL_SAMPLERATE*2*0.5   # number of samples sent to the VAD, here is 0.5 seconds at 16 bits

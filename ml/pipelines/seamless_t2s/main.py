@@ -15,6 +15,7 @@ if PROJECT_ROOT not in sys.path:
 
 from config.connection_config import *
 from config.ml_config import *
+import threading
 
 # Setup
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -22,6 +23,7 @@ print(f"running on {device}")
 model_name = "seamlessM4T_v2_large"
 vocoder_name = "vocoder_v2" if model_name == "seamlessM4T_v2_large" else "vocoder_36langs"
 translator = Translator(model_name, vocoder_name, device=device, dtype=torch.float16)
+translator_lock = threading.Lock()
 
 if(COMPILE_MODELS):
     # this takes a while, but in my tests it cut the inference time by more than half
@@ -160,12 +162,14 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 continue
 
             # Translation
-            text_output, speech_output = translator.predict(
-                input=input_text,
-                task_str="t2st",
-                tgt_lang=tgt_lang,
-                src_lang="eng"
-            )
+            with translator_lock:
+                with torch.inference_mode():
+                    text_output, speech_output = translator.predict(
+                        input=input_text,
+                        task_str="t2st",
+                        tgt_lang=tgt_lang,
+                        src_lang="eng"
+                    )
 
             audio_tensor = speech_output.audio_wavs[0][0].to(torch.float32).cpu()
             sample_rate = speech_output.sample_rate

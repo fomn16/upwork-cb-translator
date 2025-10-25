@@ -441,59 +441,62 @@ def adjust_length_to_match(seq, target_len):
 
     return adjusted
 
+lipsync_lock = threading.Lock()
 def run_lipsync_from_frames(frame_buffer, audio_bytes, face_detect, rotation:int, session_id, save_for_warmup = False):
-    if not frame_buffer or not audio_bytes:
-        print("WARNING: Empty frames or audio. Skipping lipsync.")
-        return frame_buffer
+    global lipsync_lock
+    with lipsync_lock:
+        if not frame_buffer or not audio_bytes:
+            print("WARNING: Empty frames or audio. Skipping lipsync.")
+            return frame_buffer
 
-    print(f"[stream {session_id}] Received {len(frame_buffer)} frames and {len(audio_bytes)} samples")
+        print(f"[stream {session_id}] Received {len(frame_buffer)} frames and {len(audio_bytes)} samples")
 
-    # 1. Audio preprocessing (GPU)
-    audio_start = time.time()
-    mel_gpu = preprocess_audio(audio_bytes)  # [n_mels, time] on GPU
-    print(f"[stream {session_id}] mel_gpu = {len(mel_gpu)}")
-    #print(f"[stream] Audio processed in {time.time() - audio_start:.2f}s")
+        # 1. Audio preprocessing (GPU)
+        audio_start = time.time()
+        mel_gpu = preprocess_audio(audio_bytes)  # [n_mels, time] on GPU
+        print(f"[stream {session_id}] mel_gpu = {len(mel_gpu)}")
+        #print(f"[stream] Audio processed in {time.time() - audio_start:.2f}s")
 
-    # 2. Mel chunk creation (GPU)
-    mel_chunks = create_mel_chunks(mel_gpu, len(frame_buffer))
-    print(f"[stream {session_id}] Mel chunks: {len(mel_chunks)}")
+        # 2. Mel chunk creation (GPU)
+        mel_chunks = create_mel_chunks(mel_gpu, len(frame_buffer))
+        print(f"[stream {session_id}] Mel chunks: {len(mel_chunks)}")
 
-    # Skip if mel chunk too short for model
-    if mel_chunks[0].shape[1] < 3:
-        print(f"[stream {session_id}] Skipping lipsync: mel chunk too short")
-        return frame_buffer
+        # Skip if mel chunk too short for model
+        if mel_chunks[0].shape[1] < 3:
+            print(f"[stream {session_id}] Skipping lipsync: mel chunk too short")
+            return frame_buffer
 
-    if rotation != 0:
-        rotated_frames, rotated_coords = [], []
-        for f, c in zip(frame_buffer, face_detect):
-            f_rot, c_rot = rotate_frame_and_coords(f, c, rotation)
-            rotated_frames.append(f_rot)
-            rotated_coords.append(c_rot)
-        frame_buffer, face_detect = rotated_frames, rotated_coords
+        if rotation != 0:
+            rotated_frames, rotated_coords = [], []
+            for f, c in zip(frame_buffer, face_detect):
+                f_rot, c_rot = rotate_frame_and_coords(f, c, rotation)
+                rotated_frames.append(f_rot)
+                rotated_coords.append(c_rot)
+            frame_buffer, face_detect = rotated_frames, rotated_coords
 
-    # 3. Prepare generator (mel stays on GPU)
-    gen = datagen(frame_buffer, mel_chunks, face_detect)
+        # 3. Prepare generator (mel stays on GPU)
+        gen = datagen(frame_buffer, mel_chunks, face_detect)
 
-    # 4. Run inference (mixed precision)
-    output_frames =  run_inference(gen, mel_chunks, save_for_warmup)
-    print(f"[stream {session_id}] Returning {len(output_frames)} frames")
-    if rotation != 0:
-        output_frames = [unrotate_frame(f, rotation) for f in output_frames]
+        # 4. Run inference (mixed precision)
+        output_frames =  run_inference(gen, mel_chunks, save_for_warmup)
+        print(f"[stream {session_id}] Returning {len(output_frames)} frames")
+        if rotation != 0:
+            output_frames = [unrotate_frame(f, rotation) for f in output_frames]
 
-    # inserting original frames in same positions in which no face detection was found
-    for i, detect in enumerate(face_detect):
-        if detect == None:
-            output_frames.insert(i,frame_buffer[i])
+        # inserting original frames in same positions in which no face detection was found
+        for i, detect in enumerate(face_detect):
+            if detect == None:
+                output_frames.insert(i,frame_buffer[i])
 
-    # 5. Adjusting number of returned frames in case its different from the number of received frames
-    if len(output_frames) != len(frame_buffer):
-        print(
-            f"[stream {session_id}] Adjusting output frames "
-            f"({len(output_frames)} → {len(frame_buffer)})"
-        )
-        output_frames = adjust_length_to_match(output_frames, len(frame_buffer))
+        # 5. Adjusting number of returned frames in case its different from the number of received frames
+        if len(output_frames) != len(frame_buffer):
+            print(
+                f"[stream {session_id}] Adjusting output frames "
+                f"({len(output_frames)} → {len(frame_buffer)})"
+            )
+            output_frames = adjust_length_to_match(output_frames, len(frame_buffer))
 
-    return output_frames
+        return output_frames
 
 print("Loading MediaPipe Face Detector (GPU)...")
 
