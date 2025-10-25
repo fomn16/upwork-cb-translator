@@ -85,11 +85,11 @@ class Session:
         self.polling_raw_audio = False
         self.last_sent_translation = None
 
-        '''threading.Thread(
+        threading.Thread(
             target=self.estimate_translation_delay,
             daemon=True,
         ).start()
-'''
+
     # smoothly adjusting the video delay based on current and target
     def interpolate_delay(self):
         i = 0
