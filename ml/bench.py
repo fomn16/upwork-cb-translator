@@ -1,8 +1,10 @@
 import requests
 from threading import Thread
+    
 total_times = {}
 
 def add_time_and_print(time, name):
+    return
     global total_times
     n_calls = 1
     if(name in total_times):
@@ -13,6 +15,7 @@ def add_time_and_print(time, name):
     print(f"{name}: total time = {time}, calls = {n_calls}")
 
 def log_to_server(type, location, session, quantity):
+    return
     def _send():
         try:
             requests.post(
